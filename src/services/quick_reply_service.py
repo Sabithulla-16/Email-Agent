@@ -5,6 +5,7 @@ from src.core.logging import logger
 import json
 from src.tools.calendar_api import get_availability
 from datetime import datetime, timedelta
+from src.db.helpers import get_user_name  # ✅ You imported this, now use it!
 
 groq_llm = ChatGroq(
     model="openai/gpt-oss-120b",
@@ -84,36 +85,25 @@ def generate_quick_reply_email(sender: str, subject: str, intent: str, original_
     scheduling_keywords = ['time', 'schedule', 'meeting', 'available', 'calendar', 'slot', 'propose']
     is_scheduling = any(keyword in intent.lower() for keyword in scheduling_keywords)
 
-    user_name = "[Your Name]"  # Default fallback
-    if user_uuid:
-        try:
-            from src.db.client import supabase_client
-            user_data = supabase_client.table('users').select('full_name').eq('id', user_uuid).execute()
-            if user_data.data and user_data.data[0].get('full_name'):
-                user_name = user_data.data[0]['full_name']
-        except Exception as e:
-            logger.warning(f"Could not fetch user name: {e}")
+    # ✅ USE THE HELPER FUNCTION instead of manual query
+    user_name = get_user_name(user_uuid) if user_uuid else ""
     
     calendar_context = ""
     if is_scheduling and user_uuid:
         try:
-            # Get user credentials
-            from src.db.client import supabase_client
             from src.tools.google_auth import get_valid_credentials
             
-            user_data = supabase_client.table('users').select('google_access_token, google_refresh_token').eq('id', user_uuid).execute()
-            if user_data.data:
-                creds = get_valid_credentials(user_uuid)
-                if creds:
-                    # Check availability for next 3 days
-                    tomorrow = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
-                    availability = get_availability(creds, tomorrow, days=3)
-                    
-                    if availability:
-                        calendar_context = "\n\nUSER'S CALENDAR AVAILABILITY (next 3 days):\n"
-                        for date, info in availability.items():
-                            if info['free_slots']:
-                                calendar_context += f"- {date}: {', '.join(info['free_slots'])}\n"
+            creds = get_valid_credentials(user_uuid)
+            if creds:
+                # Check availability for next 3 days
+                tomorrow = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
+                availability = get_availability(creds, tomorrow, days=3)
+                
+                if availability:
+                    calendar_context = "\n\nUSER'S CALENDAR AVAILABILITY (next 3 days):\n"
+                    for date, info in availability.items():
+                        if info['free_slots']:
+                            calendar_context += f"- {date}: {', '.join(info['free_slots'])}\n"
         except Exception as e:
             logger.warning(f"Could not fetch calendar availability: {e}")
     
@@ -131,6 +121,7 @@ def generate_quick_reply_email(sender: str, subject: str, intent: str, original_
         {scheduling_instruction}
         
         IMPORTANT: Sign the email with the user's name: {user_name}
+        Do NOT use placeholders like "[Your Name]". Use the exact name provided.
         
         Return ONLY a JSON object with: {{"subject": "Re: subject line", "body": "email body"}}
         No markdown."""

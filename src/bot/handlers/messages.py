@@ -41,8 +41,12 @@ async def handle_draft_intent(update: Update, context: ContextTypes.DEFAULT_TYPE
     # Clear the flag
     context.user_data['awaiting_draft_intent'] = False
     
-    # Generate draft using Groq
-    draft_data = generate_email_draft(intent)
+    # ✅ Get user_uuid
+    telegram_id = int(update.effective_user.id)
+    user_uuid = get_user_uuid_by_telegram(telegram_id)
+    
+    # ✅ Pass user_uuid to the function
+    draft_data = generate_email_draft(intent, user_uuid=user_uuid)
     
     if not draft_data:
         await update.message.reply_text("❌ Sorry, I couldn't generate a draft. Please try again.")
@@ -50,14 +54,16 @@ async def handle_draft_intent(update: Update, context: ContextTypes.DEFAULT_TYPE
         
     # Save draft to user_data for the callback buttons
     context.user_data['pending_draft'] = draft_data
+    context.user_data['pending_draft_user_uuid'] = user_uuid  # ✅ Store for edit function
     
-    # Format the message (Using plain text to avoid Markdown parsing errors with LLM output)
-    msg = f"📝 *Here is the draft:*\n\n"
+    # Format the message
+    msg = f"📝 <b>Here is the draft:</b>\n\n"
     msg += f"👤 To: {draft_data['to']}\n"
     msg += f"📌 Subject: {draft_data['subject']}\n\n"
     msg += f"{draft_data['body']}\n\n"
     msg += f"👇 What would you like to do?"
     
+    # Create Inline Buttons
     keyboard = [
         [
             InlineKeyboardButton("✅ Approve & Send", callback_data="approve_draft"),
@@ -67,7 +73,7 @@ async def handle_draft_intent(update: Update, context: ContextTypes.DEFAULT_TYPE
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await update.message.reply_text(msg, reply_markup=reply_markup)
+    await update.message.reply_text(msg, reply_markup=reply_markup, parse_mode='HTML')
 
 async def handle_draft_edit(update: Update, context: ContextTypes.DEFAULT_TYPE, edit_instruction: str):
     """Regenerates the draft based on user's edit instructions."""
@@ -78,13 +84,15 @@ async def handle_draft_edit(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     
     # Get the current draft
     current_draft = context.user_data.get('pending_draft')
+    user_uuid = context.user_data.get('pending_draft_user_uuid')  # ✅ Get stored user_uuid
+    
     if not current_draft:
         await update.message.reply_text("❌ Draft not found. Please start over with /draft")
         return
     
-    # Use Groq to apply the edit
+    # ✅ Pass user_uuid to the function
     from src.services.draft_service import regenerate_draft_with_edit
-    updated_draft = regenerate_draft_with_edit(current_draft, edit_instruction)
+    updated_draft = regenerate_draft_with_edit(current_draft, edit_instruction, user_uuid=user_uuid)
     
     if not updated_draft:
         await update.message.reply_text("❌ Sorry, I couldn't update the draft. Please try again.")
@@ -94,7 +102,7 @@ async def handle_draft_edit(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     context.user_data['pending_draft'] = updated_draft
     
     # Format the updated message
-    msg = f"📝 *Updated Draft:*\n\n"
+    msg = f"📝 <b>Updated Draft:</b>\n\n"
     msg += f"👤 To: {updated_draft['to']}\n"
     msg += f"📌 Subject: {updated_draft['subject']}\n\n"
     msg += f"{updated_draft['body']}\n\n"
@@ -110,4 +118,4 @@ async def handle_draft_edit(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await update.message.reply_text(msg, reply_markup=reply_markup)
+    await update.message.reply_text(msg, reply_markup=reply_markup, parse_mode='HTML')

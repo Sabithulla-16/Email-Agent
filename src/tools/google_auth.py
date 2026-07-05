@@ -150,17 +150,25 @@ def exchange_code_for_tokens(code: str, user_id: str) -> bool:
         flow.fetch_token(code=code)
         creds = flow.credentials
 
-        # 1. Get the user's email address
+        # 1. Get the user's email address AND NAME from Google
         service = build('gmail', 'v1', credentials=creds)
         profile = service.users().getProfile(userId='me').execute()
         user_email = profile.get('emailAddress')
-        logger.info(f"Retrieved email for user: {user_email}")
+        
+        # 🔥 Extract name - try displayName first, fallback to email parsing
+        user_name = profile.get('displayName', '').strip()
+        if not user_name:
+            # Fallback: extract from email (e.g., "valtryfreefire@gmail.com" -> "Valtryfreefire")
+            user_name = user_email.split('@')[0].replace('.', ' ').replace('_', ' ').title()
+        
+        logger.info(f"Retrieved profile: {user_email}, Name: {user_name}")
 
-        # 2. Save tokens and email to Supabase
+        # 2. Save tokens, email, AND NAME to Supabase
         supabase_client.table('users').update({
             'google_access_token': creds.token,
             'google_refresh_token': creds.refresh_token,
-            'email': user_email
+            'email': user_email,
+            'full_name': user_name  # 🔥 Save the name
         }).eq('id', user_id).execute()
         
         # 3. Setup Gmail Push Notification (Watch)
@@ -174,7 +182,7 @@ def exchange_code_for_tokens(code: str, user_id: str) -> bool:
         except Exception as watch_err:
             logger.error(f"Failed to setup Gmail watch: {watch_err}")
         
-        logger.info(f"✅ Successfully saved Google tokens for user {user_id}")
+        logger.info(f"✅ Successfully saved Google tokens and name for user {user_id}")
         return True
     except Exception as e:
         logger.error(f"❌ Failed to exchange code for tokens: {e}")
