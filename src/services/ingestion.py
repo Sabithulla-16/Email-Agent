@@ -10,6 +10,32 @@ from src.core.logging import logger
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from src.services.quick_reply_service import check_quick_reply
+from src.tools.gmail_api import archive_thread
+
+def get_thread_history(user_id: str, thread_id: str) -> str:
+    """Fetches previous emails in the same thread from the database."""
+    if not thread_id:
+        return ""
+        
+    try:
+        # Fetch older emails in this thread, ordered by received date
+        response = supabase_client.table('emails').select('sender, body_text').eq(
+            'user_id', user_id
+        ).eq(
+            'thread_id', thread_id
+        ).order('received_at', desc=False).execute() # Oldest first
+        
+        if not response.data:
+            return ""
+            
+        history_text = "\n\n--- PREVIOUS MESSAGES IN THIS THREAD ---\n"
+        for msg in response.data:
+            history_text += f"From: {msg['sender']}\n{msg['body_text'][:1000]}\n\n"
+            
+        return history_text
+    except Exception as e:
+        logger.error(f"Failed to fetch thread history: {e}")
+        return ""
 
 async def process_new_email(user_id: str, creds, email_data: dict):
     """Master function to process a single incoming email."""
@@ -18,6 +44,11 @@ async def process_new_email(user_id: str, creds, email_data: dict):
     # 1. Combine text and Redact PII
     raw_text = f"Subject: {email_data.get('subject')}\nFrom: {email_data.get('sender')}\n{email_data.get('body_text', email_data.get('snippet'))}"
     
+    thread_history = get_thread_history(user_id, email_data.get('threadId'))
+    if thread_history:
+        raw_text += thread_history
+        logger.info(f"🧵 Included previous thread history for: {email_data.get('subject')}")
+
     # Check for and extract attachments
     attachment_text = get_attachment_content(creds, email_data.get('id'))
     if attachment_text:
@@ -171,4 +202,16 @@ async def process_new_email(user_id: str, creds, email_data: dict):
                 except Exception as e:
                     logger.error(f"Failed to send quick reply notification: {e}")
 
-    logger.info(" Email processing complete!")
+    if final_state.get('is_resolved') and email_data.get('threadId'):
+        logger.info(f"✅ Thread detected as resolved. Archiving in Gmail...")
+        archive_thread(creds, email_data.get('threadId'))
+        
+        # Also update our database so we don't send follow-up reminders for it
+        try:
+            supabase_client.table('emails').update({
+                'reply_status': 'Resolved'
+            }).eq('message_id', email_data.get('id')).execute()
+        except Exception as db_err:
+            logger.error(f"Failed to update DB status to Resolved: {db_err}")
+
+    logger.info("🎉 Email processing complete!")

@@ -21,10 +21,11 @@ class Expense(BaseModel):
 
 class AgentState(TypedDict):
     email_text: str
-    category: Optional[str]          # Urgent, Normal, Spam, None
+    category: Optional[str]          
     summary: Optional[str]
     meetings: List[Meeting]
     tasks: List[Task]
-    needs_reply: Optional[bool]  
-    expenses: List[Expense] 
+    expenses: List[Expense]
+    needs_reply: Optional[bool]
+    is_resolved: Optional[bool]      
     error: Optional[str]

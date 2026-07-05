@@ -131,3 +131,21 @@ def send_email(creds: Credentials, to: str, subject: str, body: str):
     except Exception as e:
         logger.error(f"❌ Error sending email: {e}")
         return None
+
+def archive_thread(creds: Credentials, thread_id: str) -> bool:
+    """Removes the INBOX label from a Gmail thread, effectively archiving it."""
+    try:
+        service = get_gmail_service(creds)
+        
+        # Modify the thread to remove the INBOX label
+        service.users().threads().modify(
+            userId='me',
+            id=thread_id,
+            body={'removeLabelIds': ['INBOX']}
+        ).execute()
+        
+        logger.info(f"🗄️ Successfully archived thread: {thread_id}")
+        return True
+    except Exception as e:
+        logger.error(f"❌ Failed to archive thread {thread_id}: {e}")
+        return False

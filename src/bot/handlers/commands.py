@@ -228,7 +228,12 @@ async def background_sync(telegram_id: int, user_uuid: str, creds):
     """Runs the heavy email syncing process in the background."""
     try:
         service = get_gmail_service(creds)
-        results = service.users().messages().list(userId='me', maxResults=20, labelIds=['INBOX']).execute()
+        results = service.users().messages().list(
+            userId='me', 
+            maxResults=20, 
+            labelIds=['INBOX'], 
+            q='category:primary' 
+        ).execute()
         messages = results.get('messages', [])
         
         if not messages:

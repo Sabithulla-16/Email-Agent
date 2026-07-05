@@ -48,7 +48,12 @@ async def process_gmail_push(email_address: str):
             
         # 2. Fetch the absolute latest email from the inbox
         service = get_gmail_service(creds)
-        results = service.users().messages().list(userId='me', maxResults=1, labelIds=['INBOX']).execute()
+        results = service.users().messages().list(
+            userId='me', 
+            maxResults=1, 
+            labelIds=['INBOX'], 
+            q='category:primary' 
+        ).execute()
         messages = results.get('messages', [])
         
         if not messages:
