@@ -12,36 +12,43 @@ groq_llm = ChatGroq(
 )
 
 def generate_email_draft(intent: str, user_uuid: str = None) -> dict | None:
-    """Generates an email draft based on user intent."""
+    """Generates an email draft based on user intent and learned preferences."""
     
-    # ✅ Use the helper function
     user_name = get_user_name(user_uuid) if user_uuid else "Valtry"
     
+    # 🔥 Fetch learned preferences
+    user_prefs = ""
+    if user_uuid:
+        try:
+            from src.db.client import supabase_client
+            user_data = supabase_client.table('users').select('preferences').eq('id', user_uuid).execute()
+            if user_data.data and user_data.data[0].get('preferences'):
+                user_prefs = f"\n\nUSER STYLE PREFERENCES (Follow these strictly):\n{user_data.data[0]['preferences']}"
+        except Exception as e:
+            logger.warning(f"Could not fetch preferences: {e}")
+
     prompt = ChatPromptTemplate.from_template(
         """You are an expert email writer. Based on the user's intent, generate a professional email draft.
         
         The user's name is: {user_name}
         Sign the email with this name, NOT "[Your Name]".
+        {user_prefs}
         
         User Intent: {intent}
         
         Return ONLY a valid JSON object with exactly these keys: "to", "subject", "body".
-        If the user didn't specify an email address for "to", put "TODO: Add Email".
-        
         JSON Output:"""
     )
     
     try:
         chain = prompt | groq_llm
-        result = chain.invoke({"intent": intent, "user_name": user_name})
-        
-        # Clean up markdown formatting if Groq adds it
+        result = chain.invoke({"intent": intent, "user_name": user_name, "user_prefs": user_prefs})
         clean_text = result.content.replace('```json', '').replace('```', '').strip()
         return json.loads(clean_text)
     except Exception as e:
         logger.error(f"Draft generation failed: {e}")
         return None
-
+        
 def regenerate_draft_with_edit(current_draft: dict, edit_instruction: str, user_uuid: str = None) -> dict | None:
     """Regenerates the draft based on user's edit instructions."""
     

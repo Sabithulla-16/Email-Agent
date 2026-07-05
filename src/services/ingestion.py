@@ -1,4 +1,6 @@
+import re
 import asyncio
+from datetime import datetime, timezone
 from src.agent.graph import email_agent_graph
 from src.services.security import redact_pii
 from src.services.rag_service import generate_embedding
@@ -11,6 +13,8 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from src.services.quick_reply_service import check_quick_reply
 from src.tools.gmail_api import archive_thread
+from src.tools.vacation_mode import check_vacation_mode
+from src.services.auto_reply_service import handle_vacation_email
 
 def get_thread_history(user_id: str, thread_id: str) -> str:
     """Fetches previous emails in the same thread from the database."""
@@ -37,9 +41,54 @@ def get_thread_history(user_id: str, thread_id: str) -> str:
         logger.error(f"Failed to fetch thread history: {e}")
         return ""
 
+def update_crm_and_preferences(user_id: str, sender: str, sentiment: str, edit_instruction: str = None):
+    """Updates the Mini CRM and learns from user edits."""
+    try:
+        # 1. Extract email from sender string (e.g., "John Doe <john@example.com>")
+        email_match = re.search(r'[\w\.-]+@[\w\.-]+', sender)
+        sender_email = email_match.group(0) if email_match else sender
+        sender_name = sender.split('<')[0].strip().replace('"', '')
+
+        # 2. Upsert into Contacts table (Mini CRM)
+        supabase_client.table('contacts').upsert({
+            'user_id': user_id,
+            'email': sender_email,
+            'name': sender_name,
+            'last_sentiment': sentiment,
+            'interaction_count': 1, # Will be incremented via RPC or just overwritten for simplicity
+            'last_contacted_at': datetime.now(timezone.utc).isoformat()
+        }, on_conflict='user_id,email').execute()
+        
+        logger.info(f"🤝 CRM updated for {sender_email} (Sentiment: {sentiment})")
+
+        # 3. Continuous Learning: If the user edited a draft, save the preference
+        if edit_instruction:
+            # Fetch current preferences
+            user_data = supabase_client.table('users').select('preferences').eq('id', user_id).execute()
+            current_prefs = user_data.data[0].get('preferences', '') if user_data.data else ''
+            
+            # Append the new feedback
+            new_prefs = f"{current_prefs} | User feedback: {edit_instruction}".strip(' |')
+            
+            # Truncate to avoid DB limits
+            if len(new_prefs) > 1000:
+                new_prefs = new_prefs[-1000:]
+                
+            supabase_client.table('users').update({'preferences': new_prefs}).eq('id', user_id).execute()
+            logger.info(f"🧠 Learned new user preference: {edit_instruction}")
+            
+    except Exception as e:
+        logger.error(f"Failed to update CRM/Preferences: {e}")
+
 async def process_new_email(user_id: str, creds, email_data: dict):
     """Master function to process a single incoming email."""
     logger.info(f"📥 Processing email: {email_data.get('subject')}")
+
+    vacation_info = check_vacation_mode(creds)
+    is_vacation = vacation_info.get('is_vacation', False)
+    
+    if is_vacation:
+        logger.info(f"🏖️ User is on vacation until {vacation_info.get('return_date')}")
     
     # 1. Combine text and Redact PII
     raw_text = f"Subject: {email_data.get('subject')}\nFrom: {email_data.get('sender')}\n{email_data.get('body_text', email_data.get('snippet'))}"
@@ -61,9 +110,52 @@ async def process_new_email(user_id: str, creds, email_data: dict):
     initial_state = {
         "email_text": safe_text, 
         "category": None, "summary": None, 
-        "meetings": [], "tasks": [], "expenses": [], "needs_reply": False, "error": None
+        "meetings": [], "tasks": [], "expenses": [], 
+        "needs_reply": False, "is_resolved": False, 
+        "sender_sentiment": "Neutral", "error": None
     }
+
     final_state = email_agent_graph.invoke(initial_state)
+
+    # 2.5 HANDLE VACATION MODE
+    if is_vacation:
+        category = final_state.get('category', 'Normal')
+        is_urgent = category == 'Urgent'
+        
+        # Send auto-reply
+        reply_sent = handle_vacation_email(
+            creds=creds,
+            user_uuid=user_id,
+            email_data=email_data,
+            vacation_info=vacation_info,
+            category=category,
+            is_urgent=is_urgent
+        )
+        
+        # If urgent, notify user via Telegram
+        if is_urgent and reply_sent:
+            try:
+                from src.bot.bot_instance import application
+                from src.db.helpers import get_user_telegram_id
+                
+                telegram_id = get_user_telegram_id(user_id)
+                if telegram_id:
+                    import html
+                    sender_escaped = html.escape(str(email_data.get('sender', 'Unknown')))
+                    subject_escaped = html.escape(str(email_data.get('subject', 'No Subject')))
+                    
+                    msg = f"🚨 <b>URGENT Email During Vacation!</b>\n\n"
+                    msg += f"👤 From: {sender_escaped}\n"
+                    msg += f"📌 {subject_escaped}\n\n"
+                    msg += f"✅ Auto-reply sent. Flagged for your attention upon return."
+                    
+                    await application.bot.send_message(
+                        chat_id=telegram_id,
+                        text=msg,
+                        parse_mode='HTML'
+                    )
+            except Exception as e:
+                logger.error(f"Failed to send urgent vacation notification: {e}")
     
     # 3. Generate Main Embedding (for the overall email)
     main_embedding = generate_embedding(safe_text)
@@ -202,6 +294,8 @@ async def process_new_email(user_id: str, creds, email_data: dict):
                 except Exception as e:
                     logger.error(f"Failed to send quick reply notification: {e}")
 
+    # 9. THREAD DETECTION
+
     if final_state.get('is_resolved') and email_data.get('threadId'):
         logger.info(f"✅ Thread detected as resolved. Archiving in Gmail...")
         archive_thread(creds, email_data.get('threadId'))
@@ -213,5 +307,12 @@ async def process_new_email(user_id: str, creds, email_data: dict):
             }).eq('message_id', email_data.get('id')).execute()
         except Exception as db_err:
             logger.error(f"Failed to update DB status to Resolved: {db_err}")
+
+    # 10. UPDATE CRM & PREFERENCES
+    update_crm_and_preferences(
+        user_id=user_id, 
+        sender=email_data.get('sender'), 
+        sentiment=final_state.get('sender_sentiment', 'Neutral')
+    )
 
     logger.info("🎉 Email processing complete!")

@@ -6,6 +6,7 @@ from src.services.draft_service import generate_email_draft
 from src.core.logging import logger
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from src.bot.utils import send_formatted_message
+from src.services.ingestion import update_crm_and_preferences
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles free-text messages - routes to RAG chat, Draft generation, or Draft editing."""
@@ -78,6 +79,13 @@ async def handle_draft_intent(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def handle_draft_edit(update: Update, context: ContextTypes.DEFAULT_TYPE, edit_instruction: str):
     """Regenerates the draft based on user's edit instructions."""
     await update.message.reply_text("✏️ Updating your draft...")
+    
+    # 🔥 ADD THIS: Capture the edit instruction for continuous learning
+    telegram_id = int(update.effective_user.id)
+    user_uuid = get_user_uuid_by_telegram(telegram_id)
+    
+    # 🔥 Feed the edit instruction back into the learning loop
+    update_crm_and_preferences(user_uuid, "Self", "Neutral", edit_instruction=edit_instruction)
     
     # Clear the edit flag
     context.user_data['awaiting_draft_edit'] = False

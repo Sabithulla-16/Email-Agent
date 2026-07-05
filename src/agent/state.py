@@ -27,5 +27,6 @@ class AgentState(TypedDict):
     tasks: List[Task]
     expenses: List[Expense]
     needs_reply: Optional[bool]
-    is_resolved: Optional[bool]      
+    is_resolved: Optional[bool] 
+    sender_sentiment: Optional[str]     
     error: Optional[str]

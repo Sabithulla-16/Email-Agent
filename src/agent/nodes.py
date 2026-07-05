@@ -22,8 +22,7 @@ groq_llm = ChatGroq(
 
 def triage_node(state: AgentState) -> dict:
     """Categorizes and summarizes the incoming email."""
-    logger.info("🤖 Running Triage Node...")
-    
+    logger.info(" Running Triage Node...")
     safe_text = truncate_text(state["email_text"])
     prompt = ChatPromptTemplate.from_template(TRIAGE_PROMPT)
     chain = prompt | groq_llm | JsonOutputParser()
@@ -34,11 +33,12 @@ def triage_node(state: AgentState) -> dict:
             "category": result.get("category", "None"),
             "summary": result.get("summary", ""),
             "needs_reply": result.get("needs_reply", False),
-            "is_resolved": result.get("is_resolved", False) 
+            "is_resolved": result.get("is_resolved", False),
+            "sender_sentiment": result.get("sender_sentiment", "Neutral")
         }
     except Exception as e:
         logger.error(f"Triage failed: {e}")
-        return {"category": "None", "summary": "", "needs_reply": False, "is_resolved": False, "error": str(e)}
+        return {"category": "None", "summary": "", "needs_reply": False, "is_resolved": False, "sender_sentiment": "Neutral", "error": str(e)}
 
 def extract_node(state: AgentState) -> dict:
     """Extracts structured meetings, tasks, and expenses."""
