@@ -1,7 +1,7 @@
 import asyncio
 from src.agent.graph import email_agent_graph
 from src.services.security import redact_pii
-from src.tools.embeddings import generate_embedding
+from src.services.rag_service import generate_embedding
 from src.tools.calendar_api import create_calendar_event
 from src.tools.tasks_api import create_task
 from src.tools.drive_api import get_attachment_content

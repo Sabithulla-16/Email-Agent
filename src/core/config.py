@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     
     # Supabase
     SUPABASE_URL: str
-    SUPABASE_SERICE_ROLE_KEY: str
+    SUPABASE_SERVICE_ROLE_KEY: str
     
     # Groq
     GROQ_API_KEY: str
@@ -21,5 +21,6 @@ class Settings(BaseSettings):
 
     class Config:
         env_file = ".env"
+        case_sensitive = True
 
 settings = Settings()
