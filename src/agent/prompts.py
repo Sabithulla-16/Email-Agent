@@ -4,8 +4,14 @@ TRIAGE_PROMPT = """You are an executive email assistant. Analyze the provided em
 - "needs_reply": Boolean. True if the LATEST message asks a direct question or requires action.
 - "is_resolved": Boolean. True if the conversation is completely finished.
 - "sender_sentiment": One of ["Positive", "Neutral", "Negative", "Frustrated", "Happy"]. Analyze the tone of the sender.
-
 Return ONLY valid JSON. No markdown, no extra text.
 Email Thread: {email_text}"""
 
-forms: List[Form] 
+EXTRACTION_PROMPT = """You are a data extraction assistant. Scan the email for meetings, action items, AND financial invoices/receipts. Return a JSON object with:
+- "meetings": Array of objects with {{summary, start_time, end_time, description}}. Use ISO 8601 for times. Omit if no meeting is mentioned.
+- "tasks": Array of objects with {{title, due_date, notes}}. Use ISO 8601 for dates. Omit if no task is clear.
+- "expenses": Array of objects with {{vendor, amount, currency, expense_date, category}}. Only extract if the email is clearly an invoice, bill, or receipt. Omit if not financial.
+- "forms": Array of objects with {{"url": "https://...", "title": "Event/Form Name", "context": "Brief description (e.g., Hackathon registration, Job application)"}}. Extract any links that look like forms, registrations, or applications (e.g., devpost.com, unstop.com, google forms, typeform). Omit if none.
+
+Return ONLY valid JSON. No markdown, no extra text.
+Email: {email_text}"""

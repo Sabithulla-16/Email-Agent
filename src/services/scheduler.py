@@ -112,15 +112,16 @@ def start_scheduler():
     # you can add timezone='Asia/Kolkata' (or your timezone) to CronTrigger.
     scheduler.add_job(
         send_morning_briefings,
-        trigger=CronTrigger(hour=8, minute=0), 
+        trigger=CronTrigger(hour=8, minute=0, timezone='Asia/Kolkata'), 
         id="morning_briefing",
         name="Daily Morning Briefing",
         replace_existing=True
     )
 
+    # Schedule follow-ups for 10:00 AM IST (Asia/Kolkata) every day.
     scheduler.add_job(
         check_pending_replies,
-        trigger=CronTrigger(hour=10, minute=0), 
+        trigger=CronTrigger(hour=10, minute=0, timezone='Asia/Kolkata'), 
         id="follow_up_reminders",
         name="Follow-up Email Reminders",
         replace_existing=True
