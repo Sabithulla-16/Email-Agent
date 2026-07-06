@@ -354,3 +354,47 @@ async def expenses_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg += f"<b>Total Spent: {total:.2f} {currency}</b>"
 
     await update.message.reply_text(msg, parse_mode='HTML')
+
+async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles /profile command - manages auto-fill profile."""
+    telegram_id = int(update.effective_user.id)
+    user_uuid = get_user_uuid_by_telegram(telegram_id)
+    if not user_uuid:
+        await update.message.reply_text("❌ You are not logged in. Please use /start first.")
+        return
+
+    if not context.args:
+        # Show current profile
+        profile_data = supabase_client.table('user_profiles').select('*').eq('user_id', user_uuid).execute()
+        if profile_data.data:
+            p = profile_data.data[0]
+            msg = "👤 <b>Your Auto-Fill Profile</b>\n\n"
+            for k, v in p.items():
+                if k not in ['id', 'user_id', 'updated_at'] and v:
+                    msg += f"<b>{k.replace('_', ' ').title()}:</b> {v}\n"
+            msg += "\n<i>Use /profile set [field] [value] to update.</i>\n"
+            msg += "<i>Example: /profile set github https://github.com/valtry</i>"
+            await update.message.reply_text(msg, parse_mode='HTML')
+        else:
+            await update.message.reply_text("👤 No profile set yet. Use /profile set [field] [value] to start.\nExample: /profile set name Valtry")
+        return
+
+    if context.args[0].lower() == 'set' and len(context.args) >= 3:
+        field = context.args[1].lower()
+        value = " ".join(context.args[2:])
+        
+        field_map = {
+            'name': 'full_name', 'email': 'email', 'phone': 'phone',
+            'github': 'github_link', 'linkedin': 'linkedin_link',
+            'resume': 'resume_link', 'college': 'college_name', 'team': 'team_name'
+        }
+        db_field = field_map.get(field, field)
+        
+        supabase_client.table('user_profiles').upsert({
+            'user_id': user_uuid,
+            db_field: value
+        }, on_conflict='user_id').execute()
+        
+        await update.message.reply_text(f"✅ Updated <b>{db_field.replace('_', ' ').title()}</b> to:\n{value}", parse_mode='HTML')
+    else:
+        await update.message.reply_text("❌ Invalid format. Use: /profile set [field] [value]")

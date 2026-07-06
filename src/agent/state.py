@@ -19,6 +19,11 @@ class Expense(BaseModel):
     expense_date: str = Field(description="Date of the invoice in YYYY-MM-DD format")
     category: str = Field(description="Category like Software, Travel, Food, Utilities")
 
+class Form(BaseModel):
+    url: str = Field(description="The direct URL to the form or registration page")
+    title: str = Field(description="The name of the event, hackathon, or task", default="")
+    context: str = Field(description="Brief description (e.g., 'Hackathon registration')", default="")
+
 class AgentState(TypedDict):
     email_text: str
     category: Optional[str]          
@@ -26,6 +31,7 @@ class AgentState(TypedDict):
     meetings: List[Meeting]
     tasks: List[Task]
     expenses: List[Expense]
+    forms: List[Form] 
     needs_reply: Optional[bool]
     is_resolved: Optional[bool] 
     sender_sentiment: Optional[str]     

@@ -7,6 +7,7 @@ from src.tools.gmail_api import send_email
 from src.services.quick_reply_service import pending_quick_replies, generate_quick_reply_email
 from src.core.logging import logger
 from src.db.client import supabase_client
+from src.services.form_filler_service import analyze_and_fill_form, submit_form, cancel_form
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles inline button clicks."""
@@ -20,6 +21,33 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 🔥 HANDLE QUICK REPLY BUTTONS
     if callback_data.startswith("quick_"):
         await handle_quick_reply_click(query, callback_data)
+        return
+
+        # 🔥 HANDLE REGISTRATION BUTTONS
+    if callback_data.startswith("reg_autofill_"):
+        reg_id = callback_data.split("_")[2]
+        await handle_registration_autofill(query, context, reg_id)
+        return
+    if callback_data.startswith("reg_task_"):
+        reg_id = callback_data.split("_")[2]
+        await handle_registration_to_task(query, reg_id)
+        return
+    if callback_data.startswith("reg_ignore_"):
+        reg_id = callback_data.split("_")[2]
+        supabase_client.table('registrations').update({'status': 'Ignored'}).eq('id', reg_id).execute()
+        await query.edit_message_text("❌ Registration ignored.")
+        return
+    if callback_data.startswith("reg_proceed_"):
+        reg_id = callback_data.split("_")[2]
+        await handle_registration_proceed(query, reg_id)
+        return
+    if callback_data.startswith("reg_edit_"):
+        reg_id = callback_data.split("_")[2]
+        await handle_registration_edit(query, context, reg_id)
+        return
+    if callback_data.startswith("reg_cancel_"):
+        reg_id = callback_data.split("_")[2]
+        await handle_registration_cancel(query, reg_id)
         return
     
     # HANDLE DRAFT BUTTONS
@@ -134,3 +162,109 @@ async def handle_quick_reply_click(query, callback_data: str):
     
     # Remove from pending (one-time use)
     pending_quick_replies.pop(reply_id, None)
+
+async def handle_registration_autofill(query, context, reg_id: str):
+    """Starts the auto-fill process."""
+    await query.edit_message_text("🤖 <b>Opening browser and analyzing form...</b>\n\n<i>This may take 10-20 seconds.</i>", parse_mode='HTML')
+    
+    reg_data = supabase_client.table('registrations').select('*').eq('id', reg_id).execute()
+    if not reg_data.data:
+        await query.edit_message_text("❌ Registration not found.")
+        return
+    
+    reg = reg_data.data[0]
+    user_uuid = reg['user_id']
+    form_url = reg['form_url']
+    
+    # Run the form filler
+    result = await analyze_and_fill_form(form_url, user_uuid, reg_id)
+    
+    if not result['success']:
+        await query.edit_message_text(f"❌ Auto-fill failed: {result['error']}")
+        return
+    
+    # Show summary to user
+    filled_fields = result['filled_fields']
+    unmatched = result.get('unmatched_fields', [])
+    
+    msg = "✅ <b>Form Auto-Filled!</b>\n\n"
+    msg += "<b>Fields I filled:</b>\n"
+    for label, value in filled_fields.items():
+        msg += f"• <b>{label}:</b> {value}\n"
+    
+    if unmatched:
+        msg += f"\n⚠️ <b>Fields I couldn't fill:</b>\n"
+        for field in unmatched:
+            msg += f"• {field}\n"
+    
+    msg += "\n<b>What would you like to do?</b>"
+    
+    keyboard = [
+        [
+            InlineKeyboardButton("✅ Proceed & Submit", callback_data=f"reg_proceed_{reg_id}"),
+            InlineKeyboardButton("✏️ Edit Fields", callback_data=f"reg_edit_{reg_id}")
+        ],
+        [
+            InlineKeyboardButton("❌ Cancel", callback_data=f"reg_cancel_{reg_id}")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    # Store reg_id for editing
+    context.user_data['awaiting_reg_edit'] = reg_id
+    
+    await query.edit_message_text(msg, parse_mode='HTML', reply_markup=reply_markup)
+
+async def handle_registration_proceed(query, reg_id: str):
+    """Submits the form."""
+    await query.edit_message_text("📤 <b>Submitting form...</b>", parse_mode='HTML')
+    
+    result = await submit_form(reg_id)
+    
+    if result['success']:
+        await query.edit_message_text("✅ <b>Form submitted successfully!</b>\n\nYou'll receive a confirmation email shortly.", parse_mode='HTML')
+    else:
+        await query.edit_message_text(f"❌ Submission failed: {result['error']}")
+
+async def handle_registration_edit(query, context, reg_id: str):
+    """Asks user which field to edit."""
+    context.user_data['awaiting_reg_edit'] = reg_id
+    context.user_data['awaiting_reg_edit_mode'] = True
+    
+    await query.edit_message_text(
+        "✏️ <b>Edit Mode</b>\n\n"
+        "Reply with the field name and new value.\n"
+        "Example: <code>Phone: 9876543210</code>",
+        parse_mode='HTML'
+    )
+
+async def handle_registration_cancel(query, reg_id: str):
+    """Cancels the form filling."""
+    await cancel_form(reg_id)
+    await query.edit_message_text("❌ Form filling cancelled.")
+
+async def handle_registration_to_task(query, reg_id: str):
+    """Saves the registration as a Google Task."""
+    reg_data = supabase_client.table('registrations').select('form_url, form_title, user_id').eq('id', reg_id).execute()
+    if not reg_data.data:
+        await query.edit_message_text("❌ Registration not found.")
+        return
+    
+    reg = reg_data.data[0]
+    from src.tools.google_auth import get_valid_credentials
+    from src.tools.tasks_api import create_task
+    
+    creds = get_valid_credentials(reg['user_id'])
+    if not creds:
+        await query.edit_message_text("❌ Google session expired.")
+        return
+    
+    task_title = f"Register for: {reg['form_title'] or 'Form'}"
+    task_notes = f"Link: {reg['form_url']}"
+    
+    task_id = create_task(creds, task_title, task_notes)
+    if task_id:
+        supabase_client.table('registrations').update({'status': 'Saved to Tasks'}).eq('id', reg_id).execute()
+        await query.edit_message_text(f"✅ Saved to Google Tasks!\n📌 {task_title}")
+    else:
+        await query.edit_message_text("❌ Failed to create task.")

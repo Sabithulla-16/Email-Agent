@@ -3,7 +3,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 from src.core.config import settings
 from src.core.logging import logger
-from src.agent.state import AgentState, Meeting, Task, Expense
+from src.agent.state import AgentState, Meeting, Task, Expense, Form
 from src.agent.prompts import TRIAGE_PROMPT, EXTRACTION_PROMPT
 
 def truncate_text(text: str, max_chars: int = 20000) -> str:
@@ -57,8 +57,9 @@ def extract_node(state: AgentState) -> dict:
         meetings = [Meeting(**m) for m in result.get("meetings", []) if m.get("summary")]
         tasks = [Task(**t) for t in result.get("tasks", []) if t.get("title")]
         expenses = [Expense(**e) for e in result.get("expenses", []) if e.get("vendor") and e.get("amount")]
-        
-        return {"meetings": meetings, "tasks": tasks, "expenses": expenses}
+        forms = [Form(**f) for f in result.get("forms", []) if f.get("url")]
+        return {"meetings": meetings, "tasks": tasks, "expenses": expenses, "forms": forms}
+
     except Exception as e:
         logger.error(f"Extraction failed: {e}")
         return {"meetings": [], "tasks": [], "expenses": [], "error": str(e)}

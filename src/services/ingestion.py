@@ -315,4 +315,55 @@ async def process_new_email(user_id: str, creds, email_data: dict):
         sentiment=final_state.get('sender_sentiment', 'Neutral')
     )
 
+        # 🔥 11. HANDLE FORMS & REGISTRATIONS
+    for form in final_state.get('forms', []):
+        try:
+            # 1. Save to DB
+            reg_response = supabase_client.table('registrations').insert({
+                'user_id': user_id,
+                'email_id': saved_email_id,
+                'form_url': form.url,
+                'form_title': form.title,
+                'category': 'General',
+                'status': 'Detected'
+            }).execute()
+            
+            if reg_response.data:
+                reg_id = reg_response.data[0]['id']
+                
+                # 2. Notify user via Telegram
+                from src.bot.bot_instance import application
+                user_response = supabase_client.table('users').select('telegram_id').eq('id', user_id).execute()
+                if user_response.data and user_response.data[0].get('telegram_id'):
+                    telegram_id = user_response.data[0]['telegram_id']
+                    import html
+                    
+                    title_escaped = html.escape(form.title or 'Unnamed Form')
+                    context_escaped = html.escape(form.context or 'No description')
+                    url_escaped = html.escape(form.url)
+                    
+                    msg = f"🔗 <b>Registration/Form Detected!</b>\n\n"
+                    msg += f"📌 <b>{title_escaped}</b>\n"
+                    msg += f"📝 {context_escaped}\n"
+                    msg += f"🌐 <a href='{url_escaped}'>Open Link</a>\n\n"
+                    msg += f"Would you like me to auto-fill this form?"
+                    
+                    keyboard = [
+                        [
+                            InlineKeyboardButton("🤖 Auto-Fill Form", callback_data=f"reg_autofill_{reg_id}"),
+                            InlineKeyboardButton("📋 Save to Tasks", callback_data=f"reg_task_{reg_id}")
+                        ],
+                        [
+                            InlineKeyboardButton("❌ Ignore", callback_data=f"reg_ignore_{reg_id}")
+                        ]
+                    ]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    
+                    await application.bot.send_message(
+                        chat_id=telegram_id, text=msg, parse_mode='HTML', 
+                        reply_markup=reply_markup, disable_web_page_preview=True
+                    )
+        except Exception as e:
+            logger.error(f"Failed to process form: {e}")
+
     logger.info("🎉 Email processing complete!")

@@ -7,6 +7,7 @@ from src.core.logging import logger
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from src.bot.utils import send_formatted_message
 from src.services.ingestion import update_crm_and_preferences
+from src.services.form_filler_service import edit_field
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles free-text messages - routes to RAG chat, Draft generation, or Draft editing."""
@@ -21,6 +22,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # CHECK IF WE ARE IN INITIAL DRAFT MODE
     if context.user_data.get('awaiting_draft_intent'):
         await handle_draft_intent(update, context, user_message)
+        return
+
+    # CHECK IF WE ARE EDITING A FORM FIELD
+    if context.user_data.get('awaiting_reg_edit_mode'):
+        await handle_form_field_edit(update, context, user_message)
         return
 
     # Otherwise, it's a RAG query
@@ -127,3 +133,43 @@ async def handle_draft_edit(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await update.message.reply_text(msg, reply_markup=reply_markup, parse_mode='HTML')
+
+async def handle_form_field_edit(update: Update, context: ContextTypes.DEFAULT_TYPE, user_message: str):
+    """Handles editing a form field."""
+    reg_id = context.user_data.get('awaiting_reg_edit')
+    
+    # Parse the message (format: "Field Name: New Value")
+    if ':' not in user_message:
+        await update.message.reply_text("❌ Invalid format. Use: <code>Field Name: New Value</code>", parse_mode='HTML')
+        return
+    
+    parts = user_message.split(':', 1)
+    field_label = parts[0].strip()
+    new_value = parts[1].strip()
+    
+    result = await edit_field(reg_id, field_label, new_value)
+    
+    if result['success']:
+        # Show updated summary
+        filled_fields = result['filled_fields']
+        msg = "✅ <b>Field Updated!</b>\n\n"
+        msg += "<b>Current fields:</b>\n"
+        for label, value in filled_fields.items():
+            msg += f"• <b>{label}:</b> {value}\n"
+        
+        msg += "\n<b>Ready to submit?</b>"
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Proceed & Submit", callback_data=f"reg_proceed_{reg_id}"),
+                InlineKeyboardButton("✏️ Edit More", callback_data=f"reg_edit_{reg_id}")
+            ],
+            [
+                InlineKeyboardButton("❌ Cancel", callback_data=f"reg_cancel_{reg_id}")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(msg, parse_mode='HTML', reply_markup=reply_markup)
+    else:
+        await update.message.reply_text(f"❌ Edit failed: {result['error']}")

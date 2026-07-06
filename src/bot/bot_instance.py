@@ -1,6 +1,6 @@
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 from src.core.config import settings
-from src.bot.handlers.commands import start_command, recent_command, tasks_command, calendar_command, search_command, draft_command, briefing_command, expenses_command
+from src.bot.handlers.commands import start_command, recent_command, tasks_command, calendar_command, search_command, draft_command, briefing_command, expenses_command, profile_command
 from src.bot.handlers.callbacks import button_callback
 from src.bot.handlers.messages import handle_message
 from src.core.logging import logger
@@ -19,6 +19,7 @@ application.add_handler(CommandHandler("draft", draft_command))
 application.add_handler(CommandHandler("briefing", briefing_command))
 application.add_handler(CommandHandler("sync", sync_command))
 application.add_handler(CommandHandler("expenses", expenses_command))
+application.add_handler(CommandHandler("profile", profile_command))
 
 # Register callback handler for inline buttons
 application.add_handler(CallbackQueryHandler(button_callback))
