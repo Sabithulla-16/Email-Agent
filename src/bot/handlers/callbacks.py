@@ -1,4 +1,6 @@
 import html
+import asyncio
+from telegram.error import BadRequest
 from telegram import Update
 from telegram.ext import ContextTypes
 from src.db.client import get_user_uuid_by_telegram
@@ -7,6 +9,7 @@ from src.tools.gmail_api import send_email
 from src.services.quick_reply_service import pending_quick_replies, generate_quick_reply_email
 from src.core.logging import logger
 from src.db.client import supabase_client
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles inline button clicks."""
@@ -163,23 +166,61 @@ async def handle_quick_reply_click(query, callback_data: str):
 from src.services.form_filler_service import analyze_and_fill_form, submit_form, cancel_form
 
 async def handle_registration_autofill(query, context, reg_id: str):
-    """Starts the auto-fill process."""
-    await query.edit_message_text("🤖 <b>Opening browser and analyzing form...</b>\n\n<i>This may take 10-20 seconds.</i>", parse_mode='HTML')
+    """Starts the auto-fill process without blocking the Telegram callback."""
+    chat_id = query.message.chat_id
+    message_id = query.message.message_id
     
+    # 1. Acknowledge the button click immediately (ignore timeouts)
+    try:
+        await query.answer()
+    except Exception as e:
+        logger.warning(f"Failed to answer callback (timeout): {e}")
+
+    # 2. Edit the message to show loading state (Catch "Message is not modified" error)
+    try:
+        await query.edit_message_text(
+            "🤖 <b>Opening browser and analyzing form...</b>\n\n"
+            "<i>This may take 30-60 seconds on the first run while the browser starts up.</i>", 
+            parse_mode='HTML'
+        )
+    except BadRequest as e:
+        if "Message is not modified" in str(e):
+            logger.info("Message already shows loading state. Continuing...")
+        else:
+            logger.warning(f"BadRequest editing message: {e}")
+    except Exception as e:
+        logger.warning(f"Timeout/Error editing message: {e}")
+
+    # 3. 🔥 RUN IN BACKGROUND: This prevents Telegram's 30s timeout from killing the process
+    asyncio.create_task(run_autofill_in_background(context, chat_id, message_id, reg_id))
+
+
+async def run_autofill_in_background(context, chat_id: int, message_id: int, reg_id: str):
+    """Runs the browser agent in the background and updates the message when done."""
+    from src.services.form_filler_service import analyze_and_fill_form
+    from src.db.client import supabase_client
+
     reg_data = supabase_client.table('registrations').select('*').eq('id', reg_id).execute()
     if not reg_data.data:
-        await query.edit_message_text("❌ Registration not found.")
+        await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="❌ Registration not found.")
         return
     
     reg = reg_data.data[0]
     user_uuid = reg['user_id']
     form_url = reg['form_url']
     
-    # Run the form filler
+    # Run the form filler (this takes a long time, but it's safe in the background!)
     result = await analyze_and_fill_form(form_url, user_uuid, reg_id)
     
     if not result['success']:
-        await query.edit_message_text(f"❌ Auto-fill failed: {result['error']}")
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat_id, message_id=message_id,
+                text=f"❌ <b>Auto-fill failed:</b>\n{result['error']}", 
+                parse_mode='HTML'
+            )
+        except:
+            await context.bot.send_message(chat_id=chat_id, text=f"❌ Auto-fill failed: {result['error']}")
         return
     
     # Show summary to user
@@ -198,7 +239,6 @@ async def handle_registration_autofill(query, context, reg_id: str):
     
     msg += "\n<b>What would you like to do?</b>"
     
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     keyboard = [
         [
             InlineKeyboardButton("✅ Proceed & Submit", callback_data=f"reg_proceed_{reg_id}"),
@@ -207,7 +247,18 @@ async def handle_registration_autofill(query, context, reg_id: str):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await query.edit_message_text(msg, parse_mode='HTML', reply_markup=reply_markup)
+    # Update the message with the final results
+    try:
+        await context.bot.edit_message_text(
+            chat_id=chat_id, message_id=message_id,
+            text=msg, parse_mode='HTML', reply_markup=reply_markup
+        )
+    except Exception as e:
+        # Fallback: if editing fails (e.g., message too old), just send a new message
+        logger.warning(f"Could not edit message, sending new one: {e}")
+        await context.bot.send_message(
+            chat_id=chat_id, text=msg, parse_mode='HTML', reply_markup=reply_markup
+        )
 
 async def handle_registration_proceed(query, reg_id: str):
     """Submits the form."""
