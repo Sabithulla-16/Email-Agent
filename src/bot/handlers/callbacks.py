@@ -7,23 +7,23 @@ from src.tools.gmail_api import send_email
 from src.services.quick_reply_service import pending_quick_replies, generate_quick_reply_email
 from src.core.logging import logger
 from src.db.client import supabase_client
-from src.services.form_filler_service import analyze_and_fill_form, submit_form, cancel_form
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles inline button clicks."""
     query = update.callback_query
-    await query.answer()
+    
+    # 🔥 FIX: Wrap query.answer() in try-except to handle timeouts gracefully
+    try:
+        await query.answer()
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to answer callback query (timeout): {e}")
+        # Continue anyway - the button was clicked, we just couldn't acknowledge it
     
     callback_data = query.data
     telegram_id = int(query.from_user.id)
     logger.info(f"Button clicked: {callback_data}")
     
-    # 🔥 HANDLE QUICK REPLY BUTTONS
-    if callback_data.startswith("quick_"):
-        await handle_quick_reply_click(query, callback_data)
-        return
-
-        # 🔥 HANDLE REGISTRATION BUTTONS
+    # 🔥 HANDLE REGISTRATION BUTTONS (Auto-Fill)
     if callback_data.startswith("reg_autofill_"):
         reg_id = callback_data.split("_")[2]
         await handle_registration_autofill(query, context, reg_id)
@@ -41,13 +41,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reg_id = callback_data.split("_")[2]
         await handle_registration_proceed(query, reg_id)
         return
-    if callback_data.startswith("reg_edit_"):
-        reg_id = callback_data.split("_")[2]
-        await handle_registration_edit(query, context, reg_id)
-        return
     if callback_data.startswith("reg_cancel_"):
         reg_id = callback_data.split("_")[2]
-        await handle_registration_cancel(query, reg_id)
+        from src.services.form_filler_service import cancel_form
+        await cancel_form(reg_id)
+        await query.edit_message_text("❌ Form filling cancelled.")
+        return
+    
+    # 🔥 HANDLE QUICK REPLY BUTTONS
+    if callback_data.startswith("quick_"):
+        await handle_quick_reply_click(query, callback_data)
         return
     
     # HANDLE DRAFT BUTTONS
@@ -56,11 +59,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not draft:
             await query.edit_message_text("❌ Draft expired or not found.")
             return
-            
         await query.edit_message_text("📤 Sending email...")
         user_uuid = get_user_uuid_by_telegram(telegram_id)
         creds = get_valid_credentials(user_uuid)
-        
         if creds:
             message_id = send_email(creds, draft['to'], draft['subject'], draft['body'])
             if message_id:
@@ -70,22 +71,19 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await query.edit_message_text("❌ Google session expired. Please use /start.")
         context.user_data.pop('pending_draft', None)
-        
     elif callback_data == "edit_draft":
         context.user_data['awaiting_draft_edit'] = True
         await query.edit_message_text(
             "✏️ <b>Edit Mode Activated</b>\n\n"
-            "Please tell me what you'd like to change.\n"
+            "Please tell me what you'd like to change.\n\n"
             "Examples:\n"
             "- 'Change the signature to John Doe'\n"
             "- 'Make the tone more formal'",
             parse_mode='HTML'
         )
-        
     elif callback_data == "cancel_draft":
         context.user_data.pop('pending_draft', None)
         await query.edit_message_text("❌ Email draft cancelled.")
-
 
 async def handle_quick_reply_click(query, callback_data: str):
     """Handles quick reply button clicks."""
@@ -132,23 +130,22 @@ async def handle_quick_reply_click(query, callback_data: str):
         return
     
     message_id = send_email(
-        creds, 
-        quick_reply['sender'], 
-        reply_email['subject'], 
+        creds,
+        quick_reply['sender'],
+        reply_email['subject'],
         reply_email['body']
     )
     
     if message_id:
         # 🔥 FIX: Escape the sender variable so the < > don't break HTML parsing
         sender_escaped = html.escape(str(quick_reply['sender']))
-        
         await query.edit_message_text(
             f"✅ Reply sent to {sender_escaped}!\n\n"
-            f"<b>Subject:</b> {html.escape(reply_email['subject'])}\n"
+            f"<b>Subject:</b> {html.escape(reply_email['subject'])}\n\n"
             f"<b>Body:</b> {html.escape(reply_email['body'][:200])}...",
             parse_mode='HTML'
         )
-
+        
         try:
             supabase_client.table('emails').update({
                 'reply_status': 'Replied'
@@ -156,12 +153,14 @@ async def handle_quick_reply_click(query, callback_data: str):
             logger.info(f"✅ Marked email {quick_reply['message_id']} as Replied.")
         except Exception as db_err:
             logger.error(f"Failed to update reply status: {db_err}")
-
     else:
         await query.edit_message_text("❌ Failed to send reply.")
     
     # Remove from pending (one-time use)
     pending_quick_replies.pop(reply_id, None)
+
+# 🔥 NEW: Auto-Fill Registration Handlers
+from src.services.form_filler_service import analyze_and_fill_form, submit_form, cancel_form
 
 async def handle_registration_autofill(query, context, reg_id: str):
     """Starts the auto-fill process."""
@@ -199,19 +198,14 @@ async def handle_registration_autofill(query, context, reg_id: str):
     
     msg += "\n<b>What would you like to do?</b>"
     
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     keyboard = [
         [
             InlineKeyboardButton("✅ Proceed & Submit", callback_data=f"reg_proceed_{reg_id}"),
-            InlineKeyboardButton("✏️ Edit Fields", callback_data=f"reg_edit_{reg_id}")
-        ],
-        [
             InlineKeyboardButton("❌ Cancel", callback_data=f"reg_cancel_{reg_id}")
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    # Store reg_id for editing
-    context.user_data['awaiting_reg_edit'] = reg_id
     
     await query.edit_message_text(msg, parse_mode='HTML', reply_markup=reply_markup)
 
@@ -226,23 +220,6 @@ async def handle_registration_proceed(query, reg_id: str):
     else:
         await query.edit_message_text(f"❌ Submission failed: {result['error']}")
 
-async def handle_registration_edit(query, context, reg_id: str):
-    """Asks user which field to edit."""
-    context.user_data['awaiting_reg_edit'] = reg_id
-    context.user_data['awaiting_reg_edit_mode'] = True
-    
-    await query.edit_message_text(
-        "✏️ <b>Edit Mode</b>\n\n"
-        "Reply with the field name and new value.\n"
-        "Example: <code>Phone: 9876543210</code>",
-        parse_mode='HTML'
-    )
-
-async def handle_registration_cancel(query, reg_id: str):
-    """Cancels the form filling."""
-    await cancel_form(reg_id)
-    await query.edit_message_text("❌ Form filling cancelled.")
-
 async def handle_registration_to_task(query, reg_id: str):
     """Saves the registration as a Google Task."""
     reg_data = supabase_client.table('registrations').select('form_url, form_title, user_id').eq('id', reg_id).execute()
@@ -251,7 +228,6 @@ async def handle_registration_to_task(query, reg_id: str):
         return
     
     reg = reg_data.data[0]
-    from src.tools.google_auth import get_valid_credentials
     from src.tools.tasks_api import create_task
     
     creds = get_valid_credentials(reg['user_id'])
