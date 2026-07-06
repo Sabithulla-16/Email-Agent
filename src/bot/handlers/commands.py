@@ -364,19 +364,109 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-        # Show current profile
+        # Show current profile with all available fields
         profile_data = supabase_client.table('user_profiles').select('*').eq('user_id', user_uuid).execute()
-        if profile_data.data:
-            p = profile_data.data[0]
-            msg = "👤 <b>Your Auto-Fill Profile</b>\n\n"
-            for k, v in p.items():
-                if k not in ['id', 'user_id', 'updated_at'] and v:
-                    msg += f"<b>{k.replace('_', ' ').title()}:</b> {v}\n"
-            msg += "\n<i>Use /profile set [field] [value] to update.</i>\n"
-            msg += "<i>Example: /profile set github https://github.com/valtry</i>"
+        
+        # Define all available fields with their display names and examples
+        field_definitions = {
+            'full_name': {
+                'display': 'Full Name',
+                'emoji': '👤',
+                'example': '/profile set name John Doe',
+                'required': True
+            },
+            'email': {
+                'display': 'Email Address',
+                'emoji': '📧',
+                'example': '/profile set email john@example.com',
+                'required': True
+            },
+            'phone': {
+                'display': 'Phone Number',
+                'emoji': '📱',
+                'example': '/profile set phone +1234567890',
+                'required': False
+            },
+            'github_link': {
+                'display': 'GitHub Profile',
+                'emoji': '💻',
+                'example': '/profile set github https://github.com/johndoe',
+                'required': False
+            },
+            'linkedin_link': {
+                'display': 'LinkedIn Profile',
+                'emoji': '🔗',
+                'example': '/profile set linkedin https://linkedin.com/in/johndoe',
+                'required': False
+            },
+            'resume_link': {
+                'display': 'Resume/CV Link',
+                'emoji': '📄',
+                'example': '/profile set resume https://drive.google.com/resume.pdf',
+                'required': False
+            },
+            'college_name': {
+                'display': 'College/University',
+                'emoji': '🎓',
+                'example': '/profile set college MIT',
+                'required': False
+            },
+            'team_name': {
+                'display': 'Team Name',
+                'emoji': '👥',
+                'example': '/profile set team Byte Builders',
+                'required': False
+            }
+        }
+        
+        # Get current profile data
+        current_profile = profile_data.data[0] if profile_data.data else {}
+        
+        # Calculate completion
+        total_fields = len(field_definitions)
+        filled_fields = sum(1 for field in field_definitions.keys() if current_profile.get(field))
+        completion_percentage = int((filled_fields / total_fields) * 100)
+        
+        # Build the message
+        msg = "👤 <b>Your Auto-Fill Profile</b>\n\n"
+        msg += f"📊 <b>Completion:</b> {filled_fields}/{total_fields} fields ({completion_percentage}%)\n\n"
+        
+        # Show each field
+        for field_key, field_info in field_definitions.items():
+            value = current_profile.get(field_key)
+            emoji = field_info['emoji']
+            display_name = field_info['display']
+            example = field_info['example']
+            required = field_info['required']
+            
+            if value:
+                # Field is set
+                msg += f"{emoji} <b>{display_name}</b> {'⭐' if required else ''}\n"
+                msg += f"   ✅ <i>{value}</i>\n\n"
+            else:
+                # Field is not set
+                msg += f"{emoji} <b>{display_name}</b> {'⭐' if required else ''}\n"
+                msg += f"   ❌ <i>Not set</i>\n"
+                msg += f"   💡 <code>{example}</code>\n\n"
+        
+        # Add summary and instructions
+        msg += "━━━━━━━━━━━━━━━━━━━━\n"
+        msg += "💡 <b>How to use:</b>\n"
+        msg += "• Use <code>/profile set [field] [value]</code> to update\n"
+        msg += "• ⭐ marks required fields for hackathons\n"
+        msg += "• This data auto-fills forms when you click 'Auto-Fill Form'\n\n"
+        msg += "<b>Quick setup examples:</b>\n"
+        msg += "<code>/profile set name John Doe</code>\n"
+        msg += "<code>/profile set email john@example.com</code>\n"
+        msg += "<code>/profile set github https://github.com/johndoe</code>"
+        
+        try:
             await update.message.reply_text(msg, parse_mode='HTML')
-        else:
-            await update.message.reply_text("👤 No profile set yet. Use /profile set [field] [value] to start.\nExample: /profile set name Valtry")
+        except Exception as e:
+            logger.warning(f"Telegram reply timed out: {e}")
+            # Fallback to plain text
+            plain_msg = msg.replace('<b>', '').replace('</b>', '').replace('<i>', '').replace('</i>', '').replace('<code>', '').replace('</code>', '')
+            await update.message.reply_text(plain_msg)
         return
 
     if context.args[0].lower() == 'set' and len(context.args) >= 3:
@@ -390,11 +480,41 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         }
         db_field = field_map.get(field, field)
         
-        supabase_client.table('user_profiles').upsert({
-            'user_id': user_uuid,
-            db_field: value
-        }, on_conflict='user_id').execute()
+        # Validate field exists
+        valid_fields = list(field_map.keys()) + list(field_map.values())
+        if db_field not in valid_fields:
+            await update.message.reply_text(
+                f"❌ Unknown field: <code>{field}</code>\n\n"
+                f"<b>Available fields:</b>\n"
+                f"• name, email, phone\n"
+                f"• github, linkedin, resume\n"
+                f"• college, team",
+                parse_mode='HTML'
+            )
+            return
         
-        await update.message.reply_text(f"✅ Updated <b>{db_field.replace('_', ' ').title()}</b> to:\n{value}", parse_mode='HTML')
+        try:
+            supabase_client.table('user_profiles').upsert({
+                'user_id': user_uuid,
+                db_field: value
+            }, on_conflict='user_id').execute()
+            
+            await update.message.reply_text(
+                f"✅ Updated <b>{db_field.replace('_', ' ').title()}</b> to:\n<code>{value}</code>\n\n"
+                f"💡 Run <code>/profile</code> to see your full profile",
+                parse_mode='HTML'
+            )
+        except Exception as e:
+            logger.warning(f"Telegram reply timed out, but DB update succeeded: {e}")
+            await update.message.reply_text(f"✅ Updated {db_field.replace('_', ' ').title()}")
     else:
-        await update.message.reply_text("❌ Invalid format. Use: /profile set [field] [value]")
+        await update.message.reply_text(
+            "❌ <b>Invalid format</b>\n\n"
+            "<b>Usage:</b>\n"
+            "• <code>/profile</code> - View your profile\n"
+            "• <code>/profile set [field] [value]</code> - Update a field\n\n"
+            "<b>Examples:</b>\n"
+            "<code>/profile set name John Doe</code>\n"
+            "<code>/profile set email john@example.com</code>",
+            parse_mode='HTML'
+        )
