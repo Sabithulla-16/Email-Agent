@@ -518,3 +518,23 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "<code>/profile set email john@example.com</code>",
             parse_mode='HTML'
         )
+
+async def set_github_token_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles /set_github_token command."""
+    if not context.args:
+        await update.message.reply_text(
+            "Please provide your GitHub Personal Access Token.\n"
+            "Usage: /set_github_token ghp_xxxxx"
+        )
+        return
+    
+    token = context.args[0]
+    telegram_id = int(update.effective_user.id)
+    user_uuid = get_user_uuid_by_telegram(telegram_id)
+    
+    if not user_uuid:
+        await update.message.reply_text("❌ Please use /start first.")
+        return
+        
+    supabase_client.table('users').update({'github_access_token': token}).eq('id', user_uuid).execute()
+    await update.message.reply_text("✅ GitHub token saved successfully! I will now enrich emails with GitHub data.")

@@ -105,6 +105,10 @@ async def process_new_email(user_id: str, creds, email_data: dict):
         logger.info(f"📎 Found and extracted text from attachments for: {email_data.get('subject')}")
         
     safe_text = redact_pii(raw_text)
+
+    from src.tools.github_api import enrich_email_with_github_data
+    safe_text = await enrich_email_with_github_data(safe_text, user_id)
+
     
     # 2. Run the AI Agent
     initial_state = {

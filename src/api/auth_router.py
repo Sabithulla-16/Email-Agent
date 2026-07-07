@@ -3,6 +3,7 @@ from src.tools.google_auth import exchange_code_for_tokens
 from src.db.client import supabase_client
 from src.core.logging import logger
 import uuid
+import httpx
 
 router = APIRouter()
 
