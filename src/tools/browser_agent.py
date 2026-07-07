@@ -188,11 +188,12 @@ async def fill_field(page: Page, field: Dict, value: str) -> bool:
             if await element.count() == 0:
                 element = None
         
-        # 4. 🔥 CRITICAL FIX: Use JavaScript to find input by traversing from question title
+        # 4. Fallback: Use JavaScript to find input by traversing from question title
         if not element and field.get('label'):
             # Extract just the question text (remove "*Your answer" suffix)
             question_text = field['label'].split('*Your answer')[0].split('Your answer')[0].strip()
-            safe_label = question_text.replace("'", "\\'")
+            # 🔥 FIX: Lowercase in Python BEFORE inserting into JavaScript
+            safe_label = question_text.lower().replace("'", "\\'")
             
             # Use JavaScript to find the input by looking for the question title
             selector = await page.evaluate(f"""
@@ -204,8 +205,8 @@ async def fill_field(page: Page, field: Dict, value: str) -> bool:
                     
                     for (const title of titles) {{
                         const titleText = title.textContent.trim();
-                        // Check if this title matches our question (case-insensitive)
-                        if (titleText.toLowerCase().includes('{safe_label.toLowerCase()}')) {{
+                        // 🔥 FIX: Compare lowercased strings in JavaScript
+                        if (titleText.toLowerCase().includes('{safe_label}')) {{
                             // Find the container for this question
                             const container = title.closest('.freebirdFormviewerViewItemsItemItem, .M7eMe, [data-params], [role="listitem"]');
                             if (container) {{
