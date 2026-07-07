@@ -18,6 +18,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get('awaiting_draft_edit'):
         await handle_draft_edit(update, context, user_message)
         return
+
+    # 🔥 CHECK IF WE ARE COLLECTING FORM FIELDS
+    if context.user_data.get('awaiting_form_fields'):
+        await handle_form_field_input(update, context, user_message)
+        return
     
     # CHECK IF WE ARE IN INITIAL DRAFT MODE
     if context.user_data.get('awaiting_draft_intent'):
@@ -173,3 +178,87 @@ async def handle_form_field_edit(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text(msg, parse_mode='HTML', reply_markup=reply_markup)
     else:
         await update.message.reply_text(f"❌ Edit failed: {result['error']}")
+
+async def handle_form_field_input(update: Update, context: ContextTypes.DEFAULT_TYPE, user_message: str):
+    """Handles user input for missing form fields."""
+    reg_id = context.user_data.get('awaiting_form_fields')
+    unmatched_fields = context.user_data.get('awaiting_form_unmatched', [])
+    
+    await update.message.reply_text("📝 Processing your input...")
+    
+    # Parse user input (format: "Field Name: Value" or "Field1: Value1, Field2: Value2")
+    user_responses = {}
+    
+    # Check if multiple fields are provided
+    if ',' in user_message and ':' in user_message:
+        # Multiple fields format
+        parts = user_message.split(',')
+        for part in parts:
+            if ':' in part:
+                field_label, value = part.split(':', 1)
+                user_responses[field_label.strip()] = value.strip()
+    elif ':' in user_message:
+        # Single field format
+        field_label, value = user_message.split(':', 1)
+        user_responses[field_label.strip()] = value.strip()
+    else:
+        # If user just provided a value, assume it's for the first unmatched field
+        if len(unmatched_fields) == 1:
+            user_responses[unmatched_fields[0]] = user_message.strip()
+        else:
+            await update.message.reply_text(
+                "❌ Please use the format: <code>Field Name: Your Answer</code>\n\n"
+                f"Fields needed: {', '.join(unmatched_fields)}",
+                parse_mode='HTML'
+            )
+            return
+    
+    # Fill the additional fields
+    from src.services.form_filler_service import fill_additional_fields
+    result = await fill_additional_fields(reg_id, user_responses)
+    
+    if not result['success']:
+        await update.message.reply_text(f"❌ Failed to process: {result['error']}")
+        return
+    
+    # Check if all fields are now filled
+    remaining_unmatched = result.get('unmatched_fields', [])
+    
+    if remaining_unmatched:
+        # Still have missing fields
+        msg = "✅ <b>Fields updated!</b>\n\n"
+        msg += "<b>Current filled fields:</b>\n"
+        for label, value in result['filled_fields'].items():
+            msg += f"• <b>{label}:</b> {value}\n"
+        
+        msg += f"\n⚠️ <b>Still need:</b>\n"
+        for field in remaining_unmatched:
+            msg += f"• {field}\n"
+        
+        msg += "\nPlease provide the remaining details."
+        
+        context.user_data['awaiting_form_unmatched'] = remaining_unmatched
+        await update.message.reply_text(msg, parse_mode='HTML')
+    else:
+        # All fields filled! Show final summary
+        msg = "✅ <b>All fields filled successfully!</b>\n\n"
+        msg += "<b>Complete form data:</b>\n"
+        for label, value in result['filled_fields'].items():
+            msg += f"• <b>{label}:</b> {value}\n"
+        
+        msg += "\n<b>Ready to submit?</b>"
+        
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Proceed & Submit", callback_data=f"reg_proceed_{reg_id}"),
+                InlineKeyboardButton("❌ Cancel", callback_data=f"reg_cancel_{reg_id}")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        # Clear the awaiting state
+        context.user_data.pop('awaiting_form_fields', None)
+        context.user_data.pop('awaiting_form_unmatched', None)
+        
+        await update.message.reply_text(msg, parse_mode='HTML', reply_markup=reply_markup)

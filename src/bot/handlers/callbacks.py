@@ -1,15 +1,13 @@
 import html
 import asyncio
 from telegram.error import BadRequest
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from src.db.client import get_user_uuid_by_telegram
+from src.db.client import get_user_uuid_by_telegram, supabase_client
 from src.tools.google_auth import get_valid_credentials
 from src.tools.gmail_api import send_email
 from src.services.quick_reply_service import pending_quick_replies, generate_quick_reply_email
 from src.core.logging import logger
-from src.db.client import supabase_client
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles inline button clicks."""
@@ -20,7 +18,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
     except Exception as e:
         logger.warning(f"⚠️ Failed to answer callback query (timeout): {e}")
-        # Continue anyway - the button was clicked, we just couldn't acknowledge it
     
     callback_data = query.data
     telegram_id = int(query.from_user.id)
@@ -42,7 +39,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if callback_data.startswith("reg_proceed_"):
         reg_id = callback_data.split("_")[2]
-        await handle_registration_proceed(query, reg_id)
+        await handle_registration_proceed(query, context, reg_id)
         return
     if callback_data.startswith("reg_cancel_"):
         reg_id = callback_data.split("_")[2]
@@ -90,17 +87,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_quick_reply_click(query, callback_data: str):
     """Handles quick reply button clicks."""
-    # Parse callback: quick_qr_{email_id}_{option_index}
     parts = callback_data.split("_")
     if len(parts) < 4:
         await query.edit_message_text("❌ Invalid quick reply.")
         return
     
-    # Reconstruct reply_id (it's qr_{email_id})
     option_index = int(parts[-1])
     reply_id = "_".join(parts[1:-1])
     
-    # Look up the pending quick reply
     quick_reply = pending_quick_replies.get(reply_id)
     if not quick_reply:
         await query.edit_message_text("❌ This quick reply has expired or was already used.")
@@ -113,7 +107,6 @@ async def handle_quick_reply_click(query, callback_data: str):
     selected_option = quick_reply['options'][option_index]
     await query.edit_message_text(f"✍️ Generating reply: '{selected_option['label']}'...")
     
-    # Generate the reply email
     reply_email = generate_quick_reply_email(
         sender=quick_reply['sender'],
         subject=quick_reply['subject'],
@@ -126,7 +119,6 @@ async def handle_quick_reply_click(query, callback_data: str):
         await query.edit_message_text("❌ Failed to generate reply. Please try again.")
         return
     
-    # Get credentials and send
     creds = get_valid_credentials(quick_reply['user_uuid'])
     if not creds:
         await query.edit_message_text("❌ Google session expired. Please use /start.")
@@ -140,7 +132,6 @@ async def handle_quick_reply_click(query, callback_data: str):
     )
     
     if message_id:
-        # 🔥 FIX: Escape the sender variable so the < > don't break HTML parsing
         sender_escaped = html.escape(str(quick_reply['sender']))
         await query.edit_message_text(
             f"✅ Reply sent to {sender_escaped}!\n\n"
@@ -159,46 +150,39 @@ async def handle_quick_reply_click(query, callback_data: str):
     else:
         await query.edit_message_text("❌ Failed to send reply.")
     
-    # Remove from pending (one-time use)
     pending_quick_replies.pop(reply_id, None)
 
-# 🔥 NEW: Auto-Fill Registration Handlers
-from src.services.form_filler_service import analyze_and_fill_form, submit_form, cancel_form
-
+# 🔥 FIXED: Auto-Fill Registration Handlers
 async def handle_registration_autofill(query, context, reg_id: str):
-    """Starts the auto-fill process without blocking the Telegram callback."""
-    chat_id = query.message.chat_id
-    message_id = query.message.message_id
-    
-    # 1. Acknowledge the button click immediately (ignore timeouts)
-    try:
-        await query.answer()
-    except Exception as e:
-        logger.warning(f"Failed to answer callback (timeout): {e}")
-
-    # 2. Edit the message to show loading state (Catch "Message is not modified" error)
+    """Starts the auto-fill process in the background to prevent timeout."""
     try:
         await query.edit_message_text(
             "🤖 <b>Opening browser and analyzing form...</b>\n\n"
-            "<i>This may take 30-60 seconds on the first run while the browser starts up.</i>", 
+            "<i>This may take 10-20 seconds on the first run.</i>", 
             parse_mode='HTML'
         )
     except BadRequest as e:
-        if "Message is not modified" in str(e):
-            logger.info("Message already shows loading state. Continuing...")
-        else:
-            logger.warning(f"BadRequest editing message: {e}")
-    except Exception as e:
-        logger.warning(f"Timeout/Error editing message: {e}")
-
-    # 3. 🔥 RUN IN BACKGROUND: This prevents Telegram's 30s timeout from killing the process
-    asyncio.create_task(run_autofill_in_background(context, chat_id, message_id, reg_id))
-
+        if "Message is not modified" not in str(e):
+            raise
+    
+    reg_data = supabase_client.table('registrations').select('*').eq('id', reg_id).execute()
+    if not reg_data.data:
+        await query.edit_message_text("❌ Registration not found.")
+        return
+    
+    # 🔥 CRITICAL FIX: Run in background to prevent timeout!
+    asyncio.create_task(
+        run_autofill_in_background(
+            context, 
+            query.message.chat_id, 
+            query.message.message_id, 
+            reg_id
+        )
+    )
 
 async def run_autofill_in_background(context, chat_id: int, message_id: int, reg_id: str):
     """Runs the browser agent in the background and updates the message when done."""
     from src.services.form_filler_service import analyze_and_fill_form
-    from src.db.client import supabase_client
 
     reg_data = supabase_client.table('registrations').select('*').eq('id', reg_id).execute()
     if not reg_data.data:
@@ -209,7 +193,7 @@ async def run_autofill_in_background(context, chat_id: int, message_id: int, reg
     user_uuid = reg['user_id']
     form_url = reg['form_url']
     
-    # Run the form filler (this takes a long time, but it's safe in the background!)
+    # Run the form filler
     result = await analyze_and_fill_form(form_url, user_uuid, reg_id)
     
     if not result['success']:
@@ -227,49 +211,92 @@ async def run_autofill_in_background(context, chat_id: int, message_id: int, reg
     filled_fields = result['filled_fields']
     unmatched = result.get('unmatched_fields', [])
     
-    msg = "✅ <b>Form Auto-Filled!</b>\n\n"
-    msg += "<b>Fields I filled:</b>\n"
-    for label, value in filled_fields.items():
-        msg += f"• <b>{label}:</b> {value}\n"
+    msg = "✅ <b>Form Analysis Complete!</b>\n\n"
+    
+    if filled_fields:
+        msg += "<b>Fields I filled from your profile:</b>\n"
+        for label, value in filled_fields.items():
+            msg += f"• <b>{label}:</b> {value}\n"
+        msg += "\n"
     
     if unmatched:
-        msg += f"\n⚠️ <b>Fields I couldn't fill:</b>\n"
+        msg += f"⚠️ <b>Fields I need your help with:</b>\n"
         for field in unmatched:
             msg += f"• {field}\n"
-    
-    msg += "\n<b>What would you like to do?</b>"
-    
-    keyboard = [
-        [
-            InlineKeyboardButton("✅ Proceed & Submit", callback_data=f"reg_proceed_{reg_id}"),
-            InlineKeyboardButton("❌ Cancel", callback_data=f"reg_cancel_{reg_id}")
+        
+        msg += "\n<b>Please provide these details in this format:</b>\n"
+        msg += "<code>Field Name: Your Answer</code>\n\n"
+        msg += "<i>Example: Team Name: Byte Builders</i>\n\n"
+        msg += "<b>Or provide all at once:</b>\n"
+        msg += "<code>Team Name: Byte Builders, Phone: 1234567890</code>"
+        
+        # Store unmatched fields in session for the message handler
+        context.bot_data[f'form_{reg_id}_unmatched'] = unmatched
+    else:
+        msg += "✅ <b>All fields filled successfully!</b>\n\n"
+        msg += "<b>Ready to submit?</b>"
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Proceed & Submit", callback_data=f"reg_proceed_{reg_id}"),
+                InlineKeyboardButton("❌ Cancel", callback_data=f"reg_cancel_{reg_id}")
+            ]
         ]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat_id, message_id=message_id,
+                text=msg, parse_mode='HTML', reply_markup=reply_markup
+            )
+        except Exception as e:
+            logger.warning(f"Could not edit message: {e}")
+            await context.bot.send_message(
+                chat_id=chat_id, text=msg, parse_mode='HTML', reply_markup=reply_markup
+            )
+        return
     
-    # Update the message with the final results
     try:
         await context.bot.edit_message_text(
             chat_id=chat_id, message_id=message_id,
-            text=msg, parse_mode='HTML', reply_markup=reply_markup
+            text=msg, parse_mode='HTML'
         )
     except Exception as e:
-        # Fallback: if editing fails (e.g., message too old), just send a new message
-        logger.warning(f"Could not edit message, sending new one: {e}")
-        await context.bot.send_message(
-            chat_id=chat_id, text=msg, parse_mode='HTML', reply_markup=reply_markup
-        )
+        logger.warning(f"Could not edit message: {e}")
+        await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML')
 
-async def handle_registration_proceed(query, reg_id: str):
-    """Submits the form."""
+async def handle_registration_proceed(query, context, reg_id: str):
+    """Submits the form in the background."""
     await query.edit_message_text("📤 <b>Submitting form...</b>", parse_mode='HTML')
+    
+    # Run submission in background
+    asyncio.create_task(run_submission_in_background(context, query.message.chat_id, query.message.message_id, reg_id))
+
+async def run_submission_in_background(context, chat_id: int, message_id: int, reg_id: str):
+    """Runs form submission in the background."""
+    from src.services.form_filler_service import submit_form
     
     result = await submit_form(reg_id)
     
-    if result['success']:
-        await query.edit_message_text("✅ <b>Form submitted successfully!</b>\n\nYou'll receive a confirmation email shortly.", parse_mode='HTML')
-    else:
-        await query.edit_message_text(f"❌ Submission failed: {result['error']}")
+    try:
+        if result['success']:
+            await context.bot.edit_message_text(
+                chat_id=chat_id, message_id=message_id,
+                text="✅ <b>Form submitted successfully!</b>\n\nYou'll receive a confirmation email shortly.", 
+                parse_mode='HTML'
+            )
+        else:
+            await context.bot.edit_message_text(
+                chat_id=chat_id, message_id=message_id,
+                text=f"❌ Submission failed: {result['error']}", 
+                parse_mode='HTML'
+            )
+    except Exception as e:
+        logger.warning(f"Could not update submission message: {e}")
+        await context.bot.send_message(
+            chat_id=chat_id, 
+            text="✅ Form submitted successfully!" if result['success'] else f"❌ Submission failed: {result['error']}"
+        )
 
 async def handle_registration_to_task(query, reg_id: str):
     """Saves the registration as a Google Task."""

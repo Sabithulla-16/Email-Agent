@@ -1,4 +1,3 @@
-import asyncio
 import json
 from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
@@ -16,10 +15,11 @@ groq_llm = ChatGroq(
     groq_api_key=settings.GROQ_API_KEY
 )
 
+# 🔥 In-memory store for pending form sessions
+pending_form_sessions: dict = {}
+
 async def analyze_and_fill_form(form_url: str, user_uuid: str, reg_id: str) -> dict:
-    """
-    Main orchestrator: Opens form, detects fields, fills them, returns summary.
-    """
+    """Main orchestrator: Opens form, detects fields, fills what it can, returns summary."""
     try:
         # 1. Get user profile
         profile_response = supabase_client.table('user_profiles').select('*').eq('user_id', user_uuid).execute()
@@ -34,6 +34,7 @@ async def analyze_and_fill_form(form_url: str, user_uuid: str, reg_id: str) -> d
         # 3. Extract form fields
         fields = await extract_form_fields(page)
         if not fields:
+            await close_browser()
             return {'success': False, 'error': 'No form fields detected on this page.'}
         
         # 4. Use AI to match fields with profile data
@@ -50,7 +51,7 @@ async def analyze_and_fill_form(form_url: str, user_uuid: str, reg_id: str) -> d
             {fields}
             
             For each form field, determine:
-            1. What the field is asking for (based on label, name, placeholder)
+            1. What the field is asking for
             2. Which profile field matches it best
             3. The value to fill
             
@@ -67,14 +68,7 @@ async def analyze_and_fill_form(form_url: str, user_uuid: str, reg_id: str) -> d
                 "unmatched_fields": ["list of field labels that don't match any profile data"]
             }}
             
-            Be smart about matching. For example:
-            - "Full Name" → full_name
-            - "Email" → email
-            - "Phone" → phone
-            - "GitHub" → github_link
-            - "College/University" → college_name
-            
-            Return ONLY valid JSON. No markdown."""
+            Be smart about matching. Return ONLY valid JSON. No markdown."""
         )
         
         chain = matching_prompt | groq_llm
@@ -83,6 +77,7 @@ async def analyze_and_fill_form(form_url: str, user_uuid: str, reg_id: str) -> d
         try:
             match_data = json.loads(result.content.replace('```json', '').replace('```', '').strip())
         except:
+            await close_browser()
             return {'success': False, 'error': 'AI failed to parse form fields.'}
         
         # 5. Fill the form fields
@@ -92,94 +87,107 @@ async def analyze_and_fill_form(form_url: str, user_uuid: str, reg_id: str) -> d
             value = match.get('value', '')
             
             if value:
-                # Find the original field definition
                 field_def = next((f for f in fields if f['name'] == field_name or f['id'] == field_name), None)
                 if field_def:
                     success = await fill_field(page, field_def, value)
                     if success:
                         filled_fields[match.get('field_label', field_name)] = value
         
-        # 6. Save to database
-        supabase_client.table('registrations').update({
+        # 6. Close browser (we'll reopen later when submitting)
+        await close_browser()
+        
+        # 7. Store session data
+        unmatched_fields = match_data.get('unmatched_fields', [])
+        pending_form_sessions[reg_id] = {
+            'form_url': form_url,
+            'user_uuid': user_uuid,
+            'fields': fields,
             'filled_fields': filled_fields,
-            'status': 'Awaiting Approval'
-        }).eq('id', reg_id).execute()
+            'unmatched_fields': unmatched_fields,
+            'status': 'awaiting_user_input' if unmatched_fields else 'ready_to_submit'
+        }
         
         return {
             'success': True,
             'filled_fields': filled_fields,
-            'unmatched_fields': match_data.get('unmatched_fields', []),
+            'unmatched_fields': unmatched_fields,
             'reg_id': reg_id
         }
         
     except Exception as e:
         logger.error(f"Form filling failed: {e}")
+        await close_browser()
         return {'success': False, 'error': str(e)}
-    finally:
-        # Don't close browser yet - we need it for submission
-        pass
+
+async def fill_additional_fields(reg_id: str, user_responses: dict) -> dict:
+    """Fills additional fields provided by the user."""
+    try:
+        session = pending_form_sessions.get(reg_id)
+        if not session:
+            return {'success': False, 'error': 'Form session not found.'}
+        
+        # Update filled fields with user responses
+        session['filled_fields'].update(user_responses)
+        
+        # Remove from unmatched list
+        for field_label in user_responses.keys():
+            if field_label in session['unmatched_fields']:
+                session['unmatched_fields'].remove(field_label)
+        
+        # Update session status
+        if not session['unmatched_fields']:
+            session['status'] = 'ready_to_submit'
+        
+        return {
+            'success': True,
+            'filled_fields': session['filled_fields'],
+            'unmatched_fields': session['unmatched_fields']
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to fill additional fields: {e}")
+        return {'success': False, 'error': str(e)}
 
 async def submit_form(reg_id: str) -> dict:
     """Submits the form after user approval."""
     try:
-        # Get registration data
-        reg_response = supabase_client.table('registrations').select('*').eq('id', reg_id).execute()
-        if not reg_response.data:
-            return {'success': False, 'error': 'Registration not found.'}
+        session = pending_form_sessions.get(reg_id)
+        if not session:
+            return {'success': False, 'error': 'Form session not found.'}
         
-        reg = reg_response.data[0]
-        form_url = reg['form_url']
+        # Reopen browser and fill all fields
+        page, html_content = await open_form_page(session['form_url'])
         
-        # Re-open the form and fill again (browser state is lost)
-        page, html_content = await open_form_page(form_url)
-        fields = await extract_form_fields(page)
-        
-        # Fill all saved fields
-        for field_label, value in reg['filled_fields'].items():
-            # Find matching field
-            for field in fields:
-                if field.get('label') == field_label or field.get('name') == field_label:
-                    await fill_field(page, field, value)
-                    break
+        for field_label, value in session['filled_fields'].items():
+            field_def = next((f for f in session['fields'] if f.get('label') == field_label or f.get('name') == field_label), None)
+            if field_def:
+                await fill_field(page, field_def, value)
         
         # Click submit
         submitted = await click_submit_button(page)
         
         if submitted:
             supabase_client.table('registrations').update({
-                'status': 'Submitted'
+                'status': 'Submitted',
+                'filled_fields': session['filled_fields']
             }).eq('id', reg_id).execute()
+            
+            # Clean up session
+            pending_form_sessions.pop(reg_id, None)
+            
             return {'success': True, 'message': 'Form submitted successfully!'}
         else:
             return {'success': False, 'error': 'Could not find submit button.'}
             
     except Exception as e:
         logger.error(f"Form submission failed: {e}")
-        return {'success': False, 'error': str(e)}
-    finally:
         await close_browser()
+        return {'success': False, 'error': str(e)}
 
 async def cancel_form(reg_id: str):
     """Cancels the form filling process."""
     supabase_client.table('registrations').update({
         'status': 'Cancelled'
     }).eq('id', reg_id).execute()
+    pending_form_sessions.pop(reg_id, None)
     await close_browser()
-
-async def edit_field(reg_id: str, field_label: str, new_value: str) -> dict:
-    """Edits a single field in the registration."""
-    try:
-        reg_response = supabase_client.table('registrations').select('filled_fields').eq('id', reg_id).execute()
-        if not reg_response.data:
-            return {'success': False, 'error': 'Registration not found.'}
-        
-        filled_fields = reg_response.data[0]['filled_fields']
-        filled_fields[field_label] = new_value
-        
-        supabase_client.table('registrations').update({
-            'filled_fields': filled_fields
-        }).eq('id', reg_id).execute()
-        
-        return {'success': True, 'filled_fields': filled_fields}
-    except Exception as e:
-        return {'success': False, 'error': str(e)}
