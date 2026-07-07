@@ -120,6 +120,8 @@ async def handle_quick_reply_click(query, callback_data: str, context: ContextTy
     if not reply_email:
         await query.edit_message_text("❌ Failed to generate reply. Please try again.")
         return
+
+    reply_email['to'] = quick_reply['sender']
     
     # 🔥 FIX: Save to pending_draft and show approval buttons instead of sending immediately
     context.user_data['pending_draft'] = reply_email
