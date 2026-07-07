@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     # Gmail Pub/Sub
     GMAIL_PUBSUB_TOPIC: str
 
+    # Browserless IO
+    BROWSERLESS_API_KEY: str 
+
     class Config:
         env_file = ".env"
         case_sensitive = True

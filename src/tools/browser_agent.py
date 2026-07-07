@@ -3,42 +3,30 @@ from playwright.async_api import async_playwright, Page, Browser
 from bs4 import BeautifulSoup
 from src.core.logging import logger
 from typing import Dict, List, Optional
+from src.core.config import settings
 
-# Global browser instance (singleton pattern)
+# 🔥 Construct the Browserless WebSocket URL
+BROWSERLESS_URL = f"wss://chrome.browserless.io?token={settings.BROWSERLESS_API_KEY}"
+
 _browser: Optional[Browser] = None
 _playwright = None
 
 async def get_browser() -> Browser:
-    """Get or create a headless Chromium browser instance with extreme memory optimization."""
+    """Connects to the Browserless cloud browser instead of launching locally."""
     global _browser, _playwright
+    
     if _browser is None or not _browser.is_connected():
         if _playwright is None:
             _playwright = await async_playwright().start()
         
-        # 🔥 EXTREME MEMORY OPTIMIZATION FOR 512MB SERVERS
-        _browser = await _playwright.chromium.launch(
-            headless=True,
-            args=[
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',      # Prevents /dev/shm memory crashes
-                '--disable-gpu',                # Disables GPU hardware acceleration
-                '--single-process',             # Forces Chromium to run in a single process
-                '--no-zygote',                  # Disables the zygote process fork
-                '--disable-extensions',         # No extensions
-                '--disable-background-networking',
-                '--disable-background-timer-throttling',
-                '--disable-backgrounding-occluded-windows',
-                '--disable-renderer-backgrounding',
-                '--disable-ipc-flooding-protection',
-                '--js-flags=--max-old-space-size=256' # Limits JS heap to 256MB
-            ]
-        )
-        logger.info("🌐 Browser instance started (Low Memory Mode)")
+        # 🔥 Connect to Browserless via CDP (Chrome DevTools Protocol)
+        _browser = await _playwright.chromium.connect_over_cdp(BROWSERLESS_URL)
+        logger.info("🌐 Connected to Browserless cloud browser!")
+        
     return _browser
 
 async def close_browser():
-    """Close the browser instance."""
+    """Closes the connection to the cloud browser."""
     global _browser, _playwright
     if _browser:
         await _browser.close()
@@ -46,11 +34,13 @@ async def close_browser():
     if _playwright:
         await _playwright.stop()
         _playwright = None
-    logger.info("🌐 Browser instance closed")
+    logger.info("🌐 Disconnected from Browserless cloud browser")
 
 async def open_form_page(url: str) -> tuple[Page, str]:
-    """Opens a URL and returns the page object and HTML content."""
+    """Opens a URL in the cloud browser and returns the page object and HTML content."""
     browser = await get_browser()
+    
+    # Create a new context and page in the cloud
     context = await browser.new_context(
         viewport={'width': 1920, 'height': 1080},
         user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
@@ -58,7 +48,7 @@ async def open_form_page(url: str) -> tuple[Page, str]:
     page = await context.new_page()
     
     try:
-        logger.info(f"🌐 Opening form: {url}")
+        logger.info(f"🌐 Opening form in cloud: {url}")
         await page.goto(url, wait_until='networkidle', timeout=30000)
         await page.wait_for_timeout(2000)  # Wait for JS to render
         
