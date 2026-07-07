@@ -1,7 +1,7 @@
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 from telegram.request import HTTPXRequest
 from src.core.config import settings
-from src.bot.handlers.commands import start_command, recent_command, tasks_command, calendar_command, search_command, draft_command, briefing_command, expenses_command, profile_command, set_github_token_command
+from src.bot.handlers.commands import start_command, recent_command, tasks_command, calendar_command, search_command, draft_command, briefing_command, expenses_command, profile_command, sync_command, set_github_token_command
 from src.bot.handlers.callbacks import button_callback
 from src.bot.handlers.messages import handle_message
 from src.core.logging import logger

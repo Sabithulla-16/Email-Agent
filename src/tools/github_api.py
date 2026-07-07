@@ -12,10 +12,11 @@ async def enrich_email_with_github_data(email_text: str, user_uuid: str) -> str:
     if not matches:
         return email_text
 
-    # 🔥 Get token from Database
+    # Get user's GitHub token from DB
     user_data = supabase_client.table('users').select('github_access_token').eq('id', user_uuid).execute()
     if not user_data.data or not user_data.data[0].get('github_access_token'):
-        return email_text # No token, skip
+        logger.info("No GitHub token found for user, skipping enrichment.")
+        return email_text 
 
     token = user_data.data[0]['github_access_token']
     headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}
