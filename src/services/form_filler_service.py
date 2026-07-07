@@ -59,8 +59,7 @@ async def analyze_and_fill_form(form_url: str, user_uuid: str, reg_id: str) -> d
             {{
                 "matched_fields": [
                     {{
-                        "field_name": "name attribute of form field",
-                        "field_label": "human readable label",
+                        "field_label": "the exact label from the form",
                         "profile_key": "which profile field to use",
                         "value": "the actual value to fill"
                     }}
@@ -83,17 +82,18 @@ async def analyze_and_fill_form(form_url: str, user_uuid: str, reg_id: str) -> d
         # 5. Fill the form fields
         filled_fields = {}
         for match in match_data.get('matched_fields', []):
-            field_name = match.get('field_name')
+            field_label = match.get('field_label')
             value = match.get('value', '')
             
             if value:
-                field_def = next((f for f in fields if f['name'] == field_name or f['id'] == field_name), None)
+                # Find the field definition
+                field_def = next((f for f in fields if f.get('label') == field_label), None)
                 if field_def:
                     success = await fill_field(page, field_def, value)
                     if success:
-                        filled_fields[match.get('field_label', field_name)] = value
+                        filled_fields[field_label] = value
         
-        # 6. Close browser (we'll reopen later when submitting)
+        # 6. Close browser
         await close_browser()
         
         # 7. Store session data
@@ -110,6 +110,7 @@ async def analyze_and_fill_form(form_url: str, user_uuid: str, reg_id: str) -> d
         return {
             'success': True,
             'filled_fields': filled_fields,
+            'all_fields': fields,  # 🔥 Return all fields for summary
             'unmatched_fields': unmatched_fields,
             'reg_id': reg_id
         }

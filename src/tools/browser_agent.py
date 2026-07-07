@@ -57,71 +57,107 @@ async def open_form_page(url: str) -> tuple[Page, str]:
 
 async def extract_form_fields(page: Page) -> List[Dict]:
     """
-    🔥 RELIABLE METHOD: Uses JavaScript to extract form fields.
-    This works for Google Forms, Typeform, and any JS-heavy forms.
+    Extracts form fields with proper label detection for Google Forms.
     """
     try:
-        # 🔥 Execute JavaScript in the browser context to find form fields
         fields = await page.evaluate('''() => {
             const fields = [];
             
-            // Find all input, textarea, and select elements
-            const inputs = document.querySelectorAll('input[type="text"], input[type="email"], input[type="tel"], input[type="url"], textarea, select');
+            // Try Google Forms specific structure first
+            const formItems = document.querySelectorAll(
+                '.freebirdFormviewerViewItemsItemItem, .M7eMe, [data-params]'
+            );
             
-            inputs.forEach((input, index) => {
-                // Skip hidden, submit, button, checkbox, radio
-                const type = input.type || 'text';
-                if (['hidden', 'submit', 'button', 'checkbox', 'radio'].includes(type)) {
-                    return;
-                }
-                
-                // Find associated label
-                let label = '';
-                const id = input.id;
-                if (id) {
-                    const labelElem = document.querySelector(`label[for="${id}"]`);
-                    if (labelElem) label = labelElem.textContent.trim();
-                }
-                
-                // Try to find label in parent or sibling
-                if (!label) {
-                    const parent = input.closest('div, p, li');
-                    if (parent) {
-                        const labelElem = parent.querySelector('label');
-                        if (labelElem) label = labelElem.textContent.trim();
-                        
-                        // Try to get text before the input
-                        if (!label) {
-                            const siblings = parent.childNodes;
-                            for (let node of siblings) {
-                                if (node === input) break;
-                                if (node.nodeType === 3 && node.textContent.trim()) {
-                                    label = node.textContent.trim();
-                                    break;
-                                }
-                            }
+            if (formItems.length > 0) {
+                formItems.forEach((item, index) => {
+                    // Extract question text using multiple selectors
+                    let label = '';
+                    const titleSelectors = [
+                        '.freebirdFormviewerViewItemsItemItemTitle',
+                        '.exportItemTitle',
+                        '.qSFzN',
+                        '.freebirdFormviewerViewItemsItemItemTitleContainer'
+                    ];
+                    
+                    for (const selector of titleSelectors) {
+                        const titleEl = item.querySelector(selector);
+                        if (titleEl) {
+                            label = titleEl.textContent.trim();
+                            break;
                         }
                     }
-                }
-                
-                // Check if required
-                const required = input.hasAttribute('required') || 
-                               input.getAttribute('aria-required') === 'true';
-                
-                fields.push({
-                    name: input.name || `field_${index}`,
-                    id: input.id || '',
-                    type: type,
-                    label: label || input.placeholder || `Field ${index + 1}`,
-                    placeholder: input.placeholder || '',
-                    required: required
+                    
+                    // If no label found, try to extract from container text
+                    if (!label) {
+                        const clone = item.cloneNode(true);
+                        const inputs = clone.querySelectorAll('input, textarea, select');
+                        inputs.forEach(el => el.remove());
+                        const text = clone.textContent.trim();
+                        if (text && text.length < 200) {
+                            label = text;
+                        }
+                    }
+                    
+                    // Find the input element
+                    const input = item.querySelector(
+                        'input[type="text"], input[type="email"], input[type="tel"], input[type="url"], textarea, select'
+                    );
+                    
+                    if (input) {
+                        // Use actual label, or fallback to aria-label/placeholder
+                        const finalLabel = label || 
+                                          input.getAttribute('aria-label') || 
+                                          input.placeholder || 
+                                          `Question ${index + 1}`;
+                        
+                        fields.push({
+                            name: input.name || input.id || `gform_field_${index}`,
+                            id: input.id || '',
+                            type: input.tagName.toLowerCase() === 'textarea' ? 'textarea' : (input.type || 'text'),
+                            label: finalLabel,
+                            placeholder: input.placeholder || '',
+                            ariaLabel: input.getAttribute('aria-label') || '',
+                            required: input.hasAttribute('required') || input.getAttribute('aria-required') === 'true'
+                        });
+                    }
                 });
-            });
+            }
+            
+            // Fallback for non-Google Forms
+            if (fields.length === 0) {
+                const inputs = document.querySelectorAll(
+                    'input[type="text"], input[type="email"], input[type="tel"], input[type="url"], textarea, select'
+                );
+                
+                inputs.forEach((input, index) => {
+                    let label = input.getAttribute('aria-label') || input.placeholder || '';
+                    
+                    if (!label) {
+                        const parent = input.closest('div, p, li');
+                        if (parent) {
+                            const labelEl = parent.querySelector('label');
+                            if (labelEl) label = labelEl.textContent.trim();
+                        }
+                    }
+                    
+                    if (!label) label = `Question ${index + 1}`;
+                    
+                    fields.push({
+                        name: input.name || input.id || `field_${index}`,
+                        id: input.id || '',
+                        type: input.type || 'text',
+                        label: label,
+                        placeholder: input.placeholder || '',
+                        ariaLabel: input.getAttribute('aria-label') || '',
+                        required: input.hasAttribute('required')
+                    });
+                });
+            }
             
             return fields;
         }''')
         
-        logger.info(f"🔍 Found {len(fields)} form fields via JavaScript")
+        logger.info(f"🔍 Found {len(fields)} form fields: {[f['label'] for f in fields]}")
         return fields
         
     except Exception as e:
@@ -129,37 +165,72 @@ async def extract_form_fields(page: Page) -> List[Dict]:
         return []
 
 async def fill_field(page: Page, field: Dict, value: str) -> bool:
-    """Fills a single form field."""
+    """Fills a single form field with robust fallbacks."""
     try:
-        # Try to find the field by various selectors
-        selector = None
+        element = None
         
+        # 1. Try by ID (most reliable)
         if field.get('id'):
-            selector = f"#{field['id']}"
-        elif field.get('name'):
-            selector = f"[name='{field['name']}']"
-        elif field.get('label'):
-            # Try to find by label text
-            selector = await page.evaluate(f'''() => {{
-                const inputs = document.querySelectorAll('input, textarea, select');
-                for (const input of inputs) {{
-                    const label = input.placeholder || input.getAttribute('aria-label') || '';
-                    if (label.toLowerCase().includes('{field['label'].lower()}')) {{
-                        if (input.id) return `#${{input.id}}`;
-                        if (input.name) return `[name='${{input.name}}']`;
+            element = page.locator(f"#{field['id']}").first
+            if await element.count() == 0:
+                element = None
+        
+        # 2. Try by name (if not generic)
+        if not element and field.get('name') and not field['name'].startswith(('gform_field', 'field_')):
+            element = page.locator(f"[name='{field['name']}']").first
+            if await element.count() == 0:
+                element = None
+        
+        # 3. Try by aria-label (very common in Google Forms)
+        if not element and field.get('ariaLabel'):
+            safe_aria = field['ariaLabel'].replace("'", "\\'")
+            element = page.locator(f"input[aria-label*='{safe_aria}' i], textarea[aria-label*='{safe_aria}' i]").first
+            if await element.count() == 0:
+                element = None
+        
+        # 4. Try by label text using JavaScript traversal
+        if not element and field.get('label'):
+            safe_label = field['label'].replace("'", "\\'")
+            
+            # Use JavaScript to find input by traversing from question text
+            selector = await page.evaluate(f"""
+                () => {{
+                    const titles = document.querySelectorAll(
+                        '.freebirdFormviewerViewItemsItemItemTitle, .exportItemTitle, .qSFzN, [data-params] .freebirdFormviewerViewItemsItemItemTitle'
+                    );
+                    
+                    for (const title of titles) {{
+                        if (title.textContent.includes('{safe_label}')) {{
+                            const container = title.closest('.freebirdFormviewerViewItemsItemItem, .M7eMe, [data-params]');
+                            if (container) {{
+                                const input = container.querySelector('input[type="text"], input[type="email"], textarea');
+                                if (input) {{
+                                    if (input.id) return '#' + input.id;
+                                    if (input.name) return '[name="' + input.name + '"]';
+                                    
+                                    // Direct fill via JavaScript
+                                    input.value = '{value}';
+                                    input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                                    input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                                    return 'filled';
+                                }}
+                            }}
+                        }}
                     }}
+                    return null;
                 }}
-                return null;
-            }}''')
+            """)
+            
+            if selector == 'filled':
+                logger.info(f"✅ Filled field '{field.get('label')}' with '{value}' via JS")
+                return True
+            elif selector:
+                element = page.locator(selector).first
+                if await element.count() == 0:
+                    element = None
         
-        if not selector:
-            logger.warning(f"Could not find selector for field: {field.get('label')}")
-            return False
-        
-        element = page.locator(selector).first
-        
-        # Check if element exists and is visible
-        if await element.count() > 0:
+        # If we found the element, fill it
+        if element and await element.count() > 0:
             await element.wait_for(state='visible', timeout=5000)
             
             if field.get('type') == 'select':
@@ -170,9 +241,9 @@ async def fill_field(page: Page, field: Dict, value: str) -> bool:
             logger.info(f"✅ Filled field '{field.get('label')}' with '{value}'")
             return True
         else:
-            logger.warning(f"Field not found: {field.get('label')}")
+            logger.warning(f"❌ Field not found: {field.get('label')} (ID: {field.get('id')}, Name: {field.get('name')})")
             return False
-            
+        
     except Exception as e:
         logger.error(f"Failed to fill field {field.get('label')}: {e}")
         return False

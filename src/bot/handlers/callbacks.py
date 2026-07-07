@@ -183,6 +183,7 @@ async def handle_registration_autofill(query, context, reg_id: str):
 async def run_autofill_in_background(context, chat_id: int, message_id: int, reg_id: str):
     """Runs the browser agent in the background and updates the message when done."""
     from src.services.form_filler_service import analyze_and_fill_form
+    from src.db.client import supabase_client
 
     reg_data = supabase_client.table('registrations').select('*').eq('id', reg_id).execute()
     if not reg_data.data:
@@ -207,36 +208,44 @@ async def run_autofill_in_background(context, chat_id: int, message_id: int, reg
             await context.bot.send_message(chat_id=chat_id, text=f"❌ Auto-fill failed: {result['error']}")
         return
     
-    # Show summary to user
+    # Build detailed summary
     filled_fields = result['filled_fields']
+    all_fields = result.get('all_fields', [])
     unmatched = result.get('unmatched_fields', [])
     
-    msg = "✅ <b>Form Analysis Complete!</b>\n\n"
+    msg = "📋 <b>Form Analysis Complete!</b>\n\n"
     
-    if filled_fields:
-        msg += "<b>Fields I filled from your profile:</b>\n"
-        for label, value in filled_fields.items():
-            msg += f"• <b>{label}:</b> {value}\n"
+    # Show all detected fields
+    if all_fields:
+        msg += "<b>🔍 Detected Fields:</b>\n"
+        for field in all_fields:
+            label = field.get('label', 'Unknown')
+            filled_value = filled_fields.get(label)
+            
+            if filled_value:
+                msg += f"✅ <b>{label}:</b> {filled_value}\n"
+            else:
+                msg += f"⚠️ <b>{label}:</b> <i>Not filled</i>\n"
         msg += "\n"
     
+    # Show unmatched fields that need user input
     if unmatched:
-        msg += f"⚠️ <b>Fields I need your help with:</b>\n"
-        for field in unmatched:
-            msg += f"• {field}\n"
+        msg += "❓ <b>Need Your Input:</b>\n"
+        for field_label in unmatched:
+            msg += f"• {field_label}\n"
         
-        msg += "\n<b>Please provide these details in this format:</b>\n"
+        msg += "\n<b>Please provide these details:</b>\n"
         msg += "<code>Field Name: Your Answer</code>\n\n"
-        msg += "<i>Example: Team Name: Byte Builders</i>\n\n"
-        msg += "<b>Or provide all at once:</b>\n"
-        msg += "<code>Team Name: Byte Builders, Phone: 1234567890</code>"
+        msg += "<i>Example: Team Name: Byte Builders</i>"
         
-        # Store unmatched fields in session for the message handler
+        # Set state to await user input
         context.user_data['awaiting_form_fields'] = reg_id
         context.user_data['awaiting_form_unmatched'] = unmatched
     else:
         msg += "✅ <b>All fields filled successfully!</b>\n\n"
         msg += "<b>Ready to submit?</b>"
         
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
         keyboard = [
             [
                 InlineKeyboardButton("✅ Proceed & Submit", callback_data=f"reg_proceed_{reg_id}"),
