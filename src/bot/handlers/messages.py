@@ -7,6 +7,7 @@ from src.core.logging import logger
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from src.bot.utils import send_formatted_message
 from src.services.ingestion import update_crm_and_preferences
+import html
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles free-text messages - routes to RAG chat, Draft generation, or Form field input."""
@@ -62,12 +63,16 @@ async def handle_draft_intent(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data['pending_draft'] = draft_data
     context.user_data['pending_draft_user_uuid'] = user_uuid
     
+    to_escaped = html.escape(str(draft_data['to']))
+    subject_escaped = html.escape(str(draft_data['subject']))
+    body_escaped = html.escape(str(draft_data['body']))
+    
     # Format the message
     msg = f"📝 <b>Here is the draft:</b>\n\n"
-    msg += f"👤 To: {draft_data['to']}\n"
-    msg += f"📌 Subject: {draft_data['subject']}\n\n"
-    msg += f"{draft_data['body']}\n\n"
-    msg += f"👇 What would you like to do?"
+    msg += f"👤 <b>To:</b> {to_escaped}\n"
+    msg += f"📌 <b>Subject:</b> {subject_escaped}\n\n"
+    msg += f"{body_escaped}\n\n"
+    msg += f"👇 <b>What would you like to do?</b>"
     
     # Create Inline Buttons
     keyboard = [

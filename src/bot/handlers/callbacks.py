@@ -108,12 +108,12 @@ async def handle_quick_reply_click(query, callback_data: str, context: ContextTy
     selected_option = quick_reply['options'][option_index]
     await query.edit_message_text(f"✍️ Generating reply: '{selected_option['label']}'...")
     
-    # 🔥 CRITICAL: Use await and pass the snippet for GitHub context
+    # Generate the draft
     reply_email = await generate_quick_reply_email(
         sender=quick_reply['sender'],
         subject=quick_reply['subject'],
         intent=selected_option['intent'],
-        original_email_snippet=quick_reply.get('snippet', ''),  # 🔥 Pass snippet!
+        original_email_snippet=quick_reply.get('snippet', ''), # Pass the snippet for GitHub context!
         user_uuid=quick_reply['user_uuid']
     )
     
@@ -121,16 +121,21 @@ async def handle_quick_reply_click(query, callback_data: str, context: ContextTy
         await query.edit_message_text("❌ Failed to generate reply. Please try again.")
         return
     
-    # 🔥 FIX: Save to pending_draft and show approval buttons
+    # 🔥 FIX: Save to pending_draft and show approval buttons instead of sending immediately
     context.user_data['pending_draft'] = reply_email
     context.user_data['pending_draft_user_uuid'] = quick_reply['user_uuid']
     
-    # Format the draft message
+    # 🔥 CRITICAL FIX: Escape all dynamic text to prevent HTML parsing crashes!
+    sender_escaped = html.escape(str(quick_reply['sender']))
+    subject_escaped = html.escape(str(reply_email['subject']))
+    body_escaped = html.escape(str(reply_email['body']))
+    
+    # Format the draft message safely
     msg = f"📝 <b>Here is the quick reply draft:</b>\n\n"
-    msg += f"👤 To: {quick_reply['sender']}\n"
-    msg += f"📌 Subject: {reply_email['subject']}\n\n"
-    msg += f"{reply_email['body']}\n\n"
-    msg += f"👇 What would you like to do?"
+    msg += f"👤 <b>To:</b> {sender_escaped}\n"
+    msg += f"📌 <b>Subject:</b> {subject_escaped}\n\n"
+    msg += f"{body_escaped}\n\n"
+    msg += f"👇 <b>What would you like to do?</b>"
     
     # Create Inline Buttons for Approval
     keyboard = [
