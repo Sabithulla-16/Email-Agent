@@ -234,7 +234,7 @@ async def run_autofill_in_background(context, chat_id: int, message_id: int, reg
         for field_label in unmatched:
             msg += f"• {field_label}\n"
         
-        msg += "\n<b>Please provide these details:</b>\n"
+        msg += "\n<b>Please provide these details in this format:</b>\n"
         msg += "<code>Field Name: Your Answer</code>\n\n"
         msg += "<i>Example: Team Name: Byte Builders</i>"
         

@@ -165,7 +165,7 @@ async def extract_form_fields(page: Page) -> List[Dict]:
         return []
 
 async def fill_field(page: Page, field: Dict, value: str) -> bool:
-    """Fills a single form field with robust fallbacks."""
+    """Fills a single form field with robust fallbacks for Google Forms."""
     try:
         element = None
         
@@ -188,27 +188,34 @@ async def fill_field(page: Page, field: Dict, value: str) -> bool:
             if await element.count() == 0:
                 element = None
         
-        # 4. Try by label text using JavaScript traversal
+        # 4. 🔥 CRITICAL FIX: Use JavaScript to find input by traversing from question title
         if not element and field.get('label'):
-            safe_label = field['label'].replace("'", "\\'")
+            # Extract just the question text (remove "*Your answer" suffix)
+            question_text = field['label'].split('*Your answer')[0].split('Your answer')[0].strip()
+            safe_label = question_text.replace("'", "\\'")
             
-            # Use JavaScript to find input by traversing from question text
+            # Use JavaScript to find the input by looking for the question title
             selector = await page.evaluate(f"""
                 () => {{
+                    // Find all question titles/labels
                     const titles = document.querySelectorAll(
-                        '.freebirdFormviewerViewItemsItemItemTitle, .exportItemTitle, .qSFzN, [data-params] .freebirdFormviewerViewItemsItemItemTitle'
+                        '.freebirdFormviewerViewItemsItemItemTitle, .exportItemTitle, .qSFzN, [role="heading"]'
                     );
                     
                     for (const title of titles) {{
-                        if (title.textContent.includes('{safe_label}')) {{
-                            const container = title.closest('.freebirdFormviewerViewItemsItemItem, .M7eMe, [data-params]');
+                        const titleText = title.textContent.trim();
+                        // Check if this title matches our question (case-insensitive)
+                        if (titleText.toLowerCase().includes('{safe_label.toLowerCase()}')) {{
+                            // Find the container for this question
+                            const container = title.closest('.freebirdFormviewerViewItemsItemItem, .M7eMe, [data-params], [role="listitem"]');
                             if (container) {{
-                                const input = container.querySelector('input[type="text"], input[type="email"], textarea');
+                                // Find the input within this container
+                                const input = container.querySelector('input[type="text"], input[type="email"], input[type="tel"], input[type="url"], textarea');
                                 if (input) {{
                                     if (input.id) return '#' + input.id;
                                     if (input.name) return '[name="' + input.name + '"]';
                                     
-                                    // Direct fill via JavaScript
+                                    // Direct fill via JavaScript if we can't get a selector
                                     input.value = '{value}';
                                     input.dispatchEvent(new Event('input', {{ bubbles: true }}));
                                     input.dispatchEvent(new Event('change', {{ bubbles: true }}));
