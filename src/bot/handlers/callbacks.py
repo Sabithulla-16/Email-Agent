@@ -9,17 +9,6 @@ from src.tools.gmail_api import send_email
 from src.services.quick_reply_service import pending_quick_replies, generate_quick_reply_email
 from src.core.logging import logger
 
-import html
-import asyncio
-from telegram.error import BadRequest
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ContextTypes
-from src.db.client import get_user_uuid_by_telegram, supabase_client
-from src.tools.google_auth import get_valid_credentials
-from src.tools.gmail_api import send_email
-from src.services.quick_reply_service import pending_quick_replies, generate_quick_reply_email
-from src.core.logging import logger
-
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles inline button clicks."""
     query = update.callback_query
@@ -59,9 +48,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(" Form filling cancelled.")
         return
 
-    # 🔥 HANDLE QUICK REPLY BUTTONS (Pass context now!)
+    # 🔥 HANDLE QUICK REPLY BUTTONS
     if callback_data.startswith("quick_"):
-        await handle_quick_reply_click(query, callback_data, context)
+        await handle_quick_reply_click(query, callback_data, context)  # 🔥 Pass context!
         return
 
     # HANDLE DRAFT BUTTONS
@@ -82,6 +71,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await query.edit_message_text("❌ Google session expired. Please use /start.")
         context.user_data.pop('pending_draft', None)
+
     elif callback_data == "edit_draft":
         context.user_data['awaiting_draft_edit'] = True
         await query.edit_message_text(
@@ -96,7 +86,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop('pending_draft', None)
         await query.edit_message_text("❌ Email draft cancelled.")
 
-async def handle_quick_reply_click(query, callback_data: str):
+async def handle_quick_reply_click(query, callback_data: str, context: ContextTypes.DEFAULT_TYPE):
     """Handles quick reply button clicks."""
     parts = callback_data.split("_")
     if len(parts) < 4:
@@ -108,22 +98,22 @@ async def handle_quick_reply_click(query, callback_data: str):
     
     quick_reply = pending_quick_replies.get(reply_id)
     if not quick_reply:
-        await query.edit_message_text(" This quick reply has expired or was already used.")
+        await query.edit_message_text("❌ This quick reply has expired or was already used.")
         return
     
     if option_index >= len(quick_reply['options']):
-        await query.edit_message_text(" Invalid option.")
+        await query.edit_message_text("❌ Invalid option.")
         return
     
     selected_option = quick_reply['options'][option_index]
     await query.edit_message_text(f"✍️ Generating reply: '{selected_option['label']}'...")
     
-    #  FIX: Add 'await' and pass the stored 'snippet'
+    # 🔥 CRITICAL: Use await and pass the snippet for GitHub context
     reply_email = await generate_quick_reply_email(
         sender=quick_reply['sender'],
         subject=quick_reply['subject'],
         intent=selected_option['intent'],
-        original_email_snippet=quick_reply.get('snippet', ''), #  Pass the snippet!
+        original_email_snippet=quick_reply.get('snippet', ''),  # 🔥 Pass snippet!
         user_uuid=quick_reply['user_uuid']
     )
     
@@ -131,37 +121,28 @@ async def handle_quick_reply_click(query, callback_data: str):
         await query.edit_message_text("❌ Failed to generate reply. Please try again.")
         return
     
-    creds = get_valid_credentials(quick_reply['user_uuid'])
-    if not creds:
-        await query.edit_message_text("❌ Google session expired. Please use /start.")
-        return
+    # 🔥 FIX: Save to pending_draft and show approval buttons
+    context.user_data['pending_draft'] = reply_email
+    context.user_data['pending_draft_user_uuid'] = quick_reply['user_uuid']
     
-    message_id = send_email(
-        creds,
-        quick_reply['sender'],
-        reply_email['subject'],
-        reply_email['body']
-    )
+    # Format the draft message
+    msg = f"📝 <b>Here is the quick reply draft:</b>\n\n"
+    msg += f"👤 To: {quick_reply['sender']}\n"
+    msg += f"📌 Subject: {reply_email['subject']}\n\n"
+    msg += f"{reply_email['body']}\n\n"
+    msg += f"👇 What would you like to do?"
     
-    if message_id:
-        sender_escaped = html.escape(str(quick_reply['sender']))
-        await query.edit_message_text(
-            f"✅ Reply sent to {sender_escaped}!\n"
-            f"<b>Subject:</b> {html.escape(reply_email['subject'])}\n"
-            f"<b>Body:</b> {html.escape(reply_email['body'][:200])}...",
-            parse_mode='HTML'
-        )
-        try:
-            supabase_client.table('emails').update({
-                'reply_status': 'Replied'
-            }).eq('message_id', quick_reply['message_id']).execute()
-            logger.info(f"✅ Marked email {quick_reply['message_id']} as Replied.")
-        except Exception as db_err:
-            logger.error(f"Failed to update reply status: {db_err}")
-    else:
-        await query.edit_message_text(" Failed to send reply.")
+    # Create Inline Buttons for Approval
+    keyboard = [
+        [
+            InlineKeyboardButton("✅ Approve & Send", callback_data="approve_draft"),
+            InlineKeyboardButton("✏️ Edit Draft", callback_data="edit_draft"),
+            InlineKeyboardButton("❌ Cancel", callback_data="cancel_draft")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
     
-    pending_quick_replies.pop(reply_id, None)
+    await query.edit_message_text(msg, reply_markup=reply_markup, parse_mode='HTML')
 
 # 🔥 FIXED: Auto-Fill Registration Handlers
 async def handle_registration_autofill(query, context, reg_id: str):
