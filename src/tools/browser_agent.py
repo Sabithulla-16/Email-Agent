@@ -9,16 +9,32 @@ _browser: Optional[Browser] = None
 _playwright = None
 
 async def get_browser() -> Browser:
-    """Get or create a headless Chromium browser instance."""
+    """Get or create a headless Chromium browser instance with extreme memory optimization."""
     global _browser, _playwright
     if _browser is None or not _browser.is_connected():
         if _playwright is None:
             _playwright = await async_playwright().start()
+        
+        # 🔥 EXTREME MEMORY OPTIMIZATION FOR 512MB SERVERS
         _browser = await _playwright.chromium.launch(
             headless=True,
-            args=['--no-sandbox', '--disable-setuid-sandbox']
+            args=[
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',      # Prevents /dev/shm memory crashes
+                '--disable-gpu',                # Disables GPU hardware acceleration
+                '--single-process',             # Forces Chromium to run in a single process
+                '--no-zygote',                  # Disables the zygote process fork
+                '--disable-extensions',         # No extensions
+                '--disable-background-networking',
+                '--disable-background-timer-throttling',
+                '--disable-backgrounding-occluded-windows',
+                '--disable-renderer-backgrounding',
+                '--disable-ipc-flooding-protection',
+                '--js-flags=--max-old-space-size=256' # Limits JS heap to 256MB
+            ]
         )
-        logger.info("🌐 Browser instance started")
+        logger.info("🌐 Browser instance started (Low Memory Mode)")
     return _browser
 
 async def close_browser():
