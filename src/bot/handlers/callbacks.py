@@ -9,6 +9,17 @@ from src.tools.gmail_api import send_email
 from src.services.quick_reply_service import pending_quick_replies, generate_quick_reply_email
 from src.core.logging import logger
 
+import html
+import asyncio
+from telegram.error import BadRequest
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ContextTypes
+from src.db.client import get_user_uuid_by_telegram, supabase_client
+from src.tools.google_auth import get_valid_credentials
+from src.tools.gmail_api import send_email
+from src.services.quick_reply_service import pending_quick_replies, generate_quick_reply_email
+from src.core.logging import logger
+
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles inline button clicks."""
     query = update.callback_query
@@ -18,7 +29,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
     except Exception as e:
         logger.warning(f"⚠️ Failed to answer callback query (timeout): {e}")
-    
+        
     callback_data = query.data
     telegram_id = int(query.from_user.id)
     logger.info(f"Button clicked: {callback_data}")
@@ -45,21 +56,21 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reg_id = callback_data.split("_")[2]
         from src.services.form_filler_service import cancel_form
         await cancel_form(reg_id)
-        await query.edit_message_text("❌ Form filling cancelled.")
+        await query.edit_message_text(" Form filling cancelled.")
         return
-    
-    # 🔥 HANDLE QUICK REPLY BUTTONS
+
+    # 🔥 HANDLE QUICK REPLY BUTTONS (Pass context now!)
     if callback_data.startswith("quick_"):
-        await handle_quick_reply_click(query, callback_data)
+        await handle_quick_reply_click(query, callback_data, context)
         return
-    
+
     # HANDLE DRAFT BUTTONS
     if callback_data == "approve_draft":
         draft = context.user_data.get('pending_draft')
         if not draft:
             await query.edit_message_text("❌ Draft expired or not found.")
             return
-        await query.edit_message_text("📤 Sending email...")
+        await query.edit_message_text(" Sending email...")
         user_uuid = get_user_uuid_by_telegram(telegram_id)
         creds = get_valid_credentials(user_uuid)
         if creds:
@@ -97,21 +108,22 @@ async def handle_quick_reply_click(query, callback_data: str):
     
     quick_reply = pending_quick_replies.get(reply_id)
     if not quick_reply:
-        await query.edit_message_text("❌ This quick reply has expired or was already used.")
+        await query.edit_message_text(" This quick reply has expired or was already used.")
         return
     
     if option_index >= len(quick_reply['options']):
-        await query.edit_message_text("❌ Invalid option.")
+        await query.edit_message_text(" Invalid option.")
         return
     
     selected_option = quick_reply['options'][option_index]
     await query.edit_message_text(f"✍️ Generating reply: '{selected_option['label']}'...")
     
-    reply_email = generate_quick_reply_email(
+    #  FIX: Add 'await' and pass the stored 'snippet'
+    reply_email = await generate_quick_reply_email(
         sender=quick_reply['sender'],
         subject=quick_reply['subject'],
         intent=selected_option['intent'],
-        original_email_snippet="",
+        original_email_snippet=quick_reply.get('snippet', ''), #  Pass the snippet!
         user_uuid=quick_reply['user_uuid']
     )
     
@@ -134,12 +146,11 @@ async def handle_quick_reply_click(query, callback_data: str):
     if message_id:
         sender_escaped = html.escape(str(quick_reply['sender']))
         await query.edit_message_text(
-            f"✅ Reply sent to {sender_escaped}!\n\n"
-            f"<b>Subject:</b> {html.escape(reply_email['subject'])}\n\n"
+            f"✅ Reply sent to {sender_escaped}!\n"
+            f"<b>Subject:</b> {html.escape(reply_email['subject'])}\n"
             f"<b>Body:</b> {html.escape(reply_email['body'][:200])}...",
             parse_mode='HTML'
         )
-        
         try:
             supabase_client.table('emails').update({
                 'reply_status': 'Replied'
@@ -148,7 +159,7 @@ async def handle_quick_reply_click(query, callback_data: str):
         except Exception as db_err:
             logger.error(f"Failed to update reply status: {db_err}")
     else:
-        await query.edit_message_text("❌ Failed to send reply.")
+        await query.edit_message_text(" Failed to send reply.")
     
     pending_quick_replies.pop(reply_id, None)
 
