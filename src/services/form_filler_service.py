@@ -32,7 +32,7 @@ async def analyze_and_fill_form(form_url: str, user_uuid: str, reg_id: str) -> d
         page, html_content = await open_form_page(form_url)
         
         # 3. Extract form fields
-        fields = await extract_form_fields(html_content)
+        fields = await extract_form_fields(page)
         if not fields:
             return {'success': False, 'error': 'No form fields detected on this page.'}
         
@@ -132,7 +132,7 @@ async def submit_form(reg_id: str) -> dict:
         
         # Re-open the form and fill again (browser state is lost)
         page, html_content = await open_form_page(form_url)
-        fields = await extract_form_fields(html_content)
+        fields = await extract_form_fields(page)
         
         # Fill all saved fields
         for field_label, value in reg['filled_fields'].items():
