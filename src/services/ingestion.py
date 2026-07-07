@@ -189,7 +189,7 @@ async def process_new_email(user_id: str, creds, email_data: dict):
 
     # 🔥 4.5. DOCUMENT CHUNKING (Advanced RAG)
     # We only chunk if the text is long enough to warrant it
-    if len(safe_text) > 500:
+    if len(safe_text) > 100:
         try:
             # Split text into 500-character chunks with 50-character overlap
             # 500 chars is roughly 125 tokens, perfectly safe for our embedding model

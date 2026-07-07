@@ -31,33 +31,50 @@ async def chat_with_emails(user_id: str, question: str) -> str:
     # 1. Generate embedding for the user's question
     query_embedding = generate_embedding(question)
     
-    # 2. Call the NEW Supabase SQL function to search chunks
+    # 2. Call the Supabase SQL function to search chunks
     response = supabase_client.rpc(
         'match_chunks',
         {
             'query_embedding': query_embedding,
-            'match_count': 5, # Fetch 5 specific chunks
+            'match_count': 5,
             'filter_user_id': user_id
         }
     ).execute()
-    
     context_chunks = response.data
     
+    # 🔥 FALLBACK: If vector search fails, try basic keyword search on the main emails table
     if not context_chunks:
-        return "I couldn't find any information related to that topic in your emails or documents."
+        logger.info("⚠️ Vector search found nothing. Falling back to keyword search...")
+        keyword_response = supabase_client.table('emails').select(
+            'subject, sender, body_text'
+        ).eq(
+            'user_id', user_id
+        ).ilike(
+            'body_text', f'%{question}%'
+        ).limit(3).execute()
+        
+        if keyword_response.data:
+            # Format keyword results to look like chunks
+            context_chunks = [
+                {
+                    'subject': row['subject'],
+                    'sender': row['sender'],
+                    'chunk_text': row['body_text'][:500]
+                } for row in keyword_response.data
+            ]
+        else:
+            return "I couldn't find any information related to that topic in your emails."
 
     # 3. Format the retrieved chunks into a single context string
     context_text = ""
     for chunk in context_chunks:
         context_text += f"--- Excerpt from email: '{chunk.get('subject')}' (From: {chunk.get('sender')}) ---\n"
-        # Include the specific chunk text
         context_text += f"{chunk.get('chunk_text')}\n\n"
 
     # 4. Prompt Groq to answer based on the chunks
     rag_prompt = ChatPromptTemplate.from_template(
-        """You are a helpful assistant answering questions based on the user's email history and attached documents.
-        Use ONLY the provided context to answer the question. 
-        
+        """You are a helpful assistant answering questions based on the user's email history.
+        Use ONLY the provided context to answer the question.
         FORMATTING RULES:
         - You are generating HTML for Telegram. Telegram ONLY supports these tags: <b>, <i>, <ul>, <ol>, <li>.
         - Use <b> for headers and important text.
@@ -66,18 +83,12 @@ async def chat_with_emails(user_id: str, question: str) -> str:
         - DO NOT use <p>, <br>, <h1>, <h2>, <div>, or any other HTML tags.
         - DO NOT use markdown symbols like #, *, or _.
         - DO NOT use the & symbol, write "and" instead.
-        
         If the answer is not in the context, say "I couldn't find that information in your emails."
-        
         Context:
         {context}
-        
         Question: {question}
-        
         Answer:"""
     )
-    
     chain = rag_prompt | groq_llm
     result = chain.invoke({"context": context_text, "question": question})
-    
     return result.content
