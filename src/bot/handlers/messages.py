@@ -133,29 +133,25 @@ async def handle_draft_edit(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     await update.message.reply_text(msg, reply_markup=reply_markup, parse_mode='HTML')
 
 async def handle_form_field_input(update: Update, context: ContextTypes.DEFAULT_TYPE, user_message: str):
-    """Handles user input for missing form fields."""
+    """Handles user input for missing form fields in a persistent session."""
     reg_id = context.user_data.get('awaiting_form_fields')
     unmatched_fields = context.user_data.get('awaiting_form_unmatched', [])
     
     await update.message.reply_text("📝 Processing your input...")
     
-    # Parse user input (format: "Field Name: Value" or "Field1: Value1, Field2: Value2")
+    # Parse user input
     user_responses = {}
     
-    # Check if multiple fields are provided
     if ',' in user_message and ':' in user_message:
-        # Multiple fields format
         parts = user_message.split(',')
         for part in parts:
             if ':' in part:
                 field_label, value = part.split(':', 1)
                 user_responses[field_label.strip()] = value.strip()
     elif ':' in user_message:
-        # Single field format
         field_label, value = user_message.split(':', 1)
         user_responses[field_label.strip()] = value.strip()
     else:
-        # If user just provided a value, assume it's for the first unmatched field
         if len(unmatched_fields) == 1:
             user_responses[unmatched_fields[0]] = user_message.strip()
         else:
@@ -174,32 +170,31 @@ async def handle_form_field_input(update: Update, context: ContextTypes.DEFAULT_
         await update.message.reply_text(f"❌ Failed to process: {result['error']}")
         return
     
-    # Check if all fields are now filled
     remaining_unmatched = result.get('unmatched_fields', [])
     
+    msg = "✅ <b>Form Analysis Updated!</b>\n\n"
+    
+    # Show ALL filled fields clearly
+    msg += "<b>✅ Fields filled so far:</b>\n"
+    for label, value in result['filled_fields'].items():
+        msg += f"• <b>{label}:</b> {value}\n"
+    msg += "\n"
+    
     if remaining_unmatched:
-        # Still have missing fields
-        msg = "✅ <b>Fields updated!</b>\n\n"
-        msg += "<b>Current filled fields:</b>\n"
-        for label, value in result['filled_fields'].items():
-            msg += f"• <b>{label}:</b> {value}\n"
-        
-        msg += f"\n⚠️ <b>Still need:</b>\n"
+        # 🔥 KEEP SESSION ACTIVE: Still have missing fields
+        msg += f"⚠️ <b>Fields I still need your help with:</b>\n"
         for field in remaining_unmatched:
-            msg += f"• {field}\n"
+            msg += f"• <b>{field}</b>\n"
         
         msg += "\nPlease provide the remaining details."
         
+        # Keep the session active!
         context.user_data['awaiting_form_unmatched'] = remaining_unmatched
         await update.message.reply_text(msg, parse_mode='HTML')
     else:
-        # All fields filled! Show final summary
-        msg = "✅ <b>All fields filled successfully!</b>\n\n"
-        msg += "<b>Complete form data:</b>\n"
-        for label, value in result['filled_fields'].items():
-            msg += f"• <b>{label}:</b> {value}\n"
-        
-        msg += "\n<b>Ready to submit?</b>"
+        # 🔥 ALL FIELDS FILLED: Show final summary and Submit buttons
+        msg += "🎉 <b>All fields filled successfully!</b>\n\n"
+        msg += "<b>Ready to submit?</b>"
         
         keyboard = [
             [
@@ -209,7 +204,7 @@ async def handle_form_field_input(update: Update, context: ContextTypes.DEFAULT_
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        # Clear the awaiting state
+        # Clear the awaiting state ONLY when all fields are filled
         context.user_data.pop('awaiting_form_fields', None)
         context.user_data.pop('awaiting_form_unmatched', None)
         

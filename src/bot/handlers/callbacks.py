@@ -231,7 +231,8 @@ async def run_autofill_in_background(context, chat_id: int, message_id: int, reg
         msg += "<code>Team Name: Byte Builders, Phone: 1234567890</code>"
         
         # Store unmatched fields in session for the message handler
-        context.bot_data[f'form_{reg_id}_unmatched'] = unmatched
+        context.user_data['awaiting_form_fields'] = reg_id
+        context.user_data['awaiting_form_unmatched'] = unmatched
     else:
         msg += "✅ <b>All fields filled successfully!</b>\n\n"
         msg += "<b>Ready to submit?</b>"
