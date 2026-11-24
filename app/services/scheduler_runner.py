@@ -23,7 +23,6 @@ from app.services.digest_service import DigestService, compute_next_digest_time
 from app.services.groq_service import GroqService
 from app.services.notification_service import NotificationService
 from app.services.sync_service import SyncService
-from app.services.telegram_client import TelegramClient
 
 logger = structlog.get_logger("app.services.scheduler_runner")
 
@@ -64,10 +63,11 @@ async def run_direct_sync_cycle() -> dict[str, Any]:
         telegram_repo=telegram_repo,
     )
     digest_svc = DigestService(
-        email_repo=email_repo,
         user_repo=user_repo,
-        groq_service=groq_svc,
-        telegram_client=TelegramClient(settings=settings),
+        email_repo=email_repo,
+        draft_repo=draft_repo,
+        telegram_repo=telegram_repo,
+        settings=settings,
     )
 
     ctx = {
