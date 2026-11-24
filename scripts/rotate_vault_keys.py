@@ -45,10 +45,12 @@ async def rotate_tokens() -> None:
 
             await (
                 client.table("oauth_tokens")
-                .update({
-                    "refresh_token_enc": new_ciphertext,
-                    "key_version": new_ver,
-                })
+                .update(
+                    {
+                        "refresh_token_enc": new_ciphertext,
+                        "key_version": new_ver,
+                    }
+                )
                 .eq("user_id", user_id)
                 .execute()
             )

@@ -169,15 +169,11 @@ def validate_startup_config(settings: Settings) -> None:
     # 1. APP_SECRET_KEY
     app_sec = settings.APP_SECRET_KEY.get_secret_value() if settings.APP_SECRET_KEY else ""
     if not app_sec or len(app_sec) < 32 or "insecure" in app_sec.lower():
-        errors.append(
-            "APP_SECRET_KEY: Must be a secure random string of at least 32 characters."
-        )
+        errors.append("APP_SECRET_KEY: Must be a secure random string of at least 32 characters.")
 
     # 2. TOKEN_ENCRYPTION_KEY
     tok_sec = (
-        settings.TOKEN_ENCRYPTION_KEY.get_secret_value()
-        if settings.TOKEN_ENCRYPTION_KEY
-        else ""
+        settings.TOKEN_ENCRYPTION_KEY.get_secret_value() if settings.TOKEN_ENCRYPTION_KEY else ""
     )
     if not tok_sec or len(tok_sec.encode("utf-8")) != 32:
         errors.append(
@@ -194,23 +190,16 @@ def validate_startup_config(settings: Settings) -> None:
             "SUPABASE_URL: Must be a valid HTTPS URL (e.g. https://<project-ref>.supabase.co)."
         )
     sup_key = (
-        settings.SUPABASE_SECRET_KEY.get_secret_value()
-        if settings.SUPABASE_SECRET_KEY
-        else ""
+        settings.SUPABASE_SECRET_KEY.get_secret_value() if settings.SUPABASE_SECRET_KEY else ""
     )
     if not sup_key or "dummy" in sup_key.lower():
-        errors.append(
-            "SUPABASE_SECRET_KEY: Required and cannot be a dummy placeholder."
-        )
+        errors.append("SUPABASE_SECRET_KEY: Required and cannot be a dummy placeholder.")
 
     # 4. REDIS_URL
     if not settings.REDIS_URL or not (
-        settings.REDIS_URL.startswith("redis://")
-        or settings.REDIS_URL.startswith("rediss://")
+        settings.REDIS_URL.startswith("redis://") or settings.REDIS_URL.startswith("rediss://")
     ):
-        errors.append(
-            "REDIS_URL: Must be a valid Redis connection string (redis:// or rediss://)."
-        )
+        errors.append("REDIS_URL: Must be a valid Redis connection string (redis:// or rediss://).")
 
     # 5. GROQ_API_KEY
     groq_k = settings.GROQ_API_KEY.get_secret_value() if settings.GROQ_API_KEY else ""
@@ -220,11 +209,7 @@ def validate_startup_config(settings: Settings) -> None:
     # 6. GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI
     if not settings.GOOGLE_CLIENT_ID or "mock" in settings.GOOGLE_CLIENT_ID.lower():
         errors.append("GOOGLE_CLIENT_ID: Required and cannot be a mock placeholder.")
-    gsec = (
-        settings.GOOGLE_CLIENT_SECRET.get_secret_value()
-        if settings.GOOGLE_CLIENT_SECRET
-        else ""
-    )
+    gsec = settings.GOOGLE_CLIENT_SECRET.get_secret_value() if settings.GOOGLE_CLIENT_SECRET else ""
     if not gsec or "mock" in gsec.lower():
         errors.append("GOOGLE_CLIENT_SECRET: Required and cannot be a mock placeholder.")
     if not settings.GOOGLE_REDIRECT_URI or not settings.GOOGLE_REDIRECT_URI.startswith("https://"):
@@ -240,11 +225,7 @@ def validate_startup_config(settings: Settings) -> None:
         )
 
     # 8. TELEGRAM_BOT_TOKEN & TELEGRAM_WEBHOOK_SECRET
-    tg_tok = (
-        settings.TELEGRAM_BOT_TOKEN.get_secret_value()
-        if settings.TELEGRAM_BOT_TOKEN
-        else ""
-    )
+    tg_tok = settings.TELEGRAM_BOT_TOKEN.get_secret_value() if settings.TELEGRAM_BOT_TOKEN else ""
     if not tg_tok or "mock" in tg_tok.lower():
         errors.append("TELEGRAM_BOT_TOKEN: Required and cannot be a mock placeholder.")
 

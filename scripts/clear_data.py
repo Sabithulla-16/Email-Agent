@@ -31,10 +31,7 @@ async def main() -> None:
         except Exception:
             try:
                 res = await (
-                    client.table(table)
-                    .delete()
-                    .neq("created_at", "1970-01-01T00:00:00Z")
-                    .execute()
+                    client.table(table).delete().neq("created_at", "1970-01-01T00:00:00Z").execute()
                 )
                 count = len(res.data) if res.data else 0
                 print(f"Cleared {count} rows from {table}")

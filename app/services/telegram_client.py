@@ -21,12 +21,12 @@ from app.queue.redis import get_redis
 _orig_getaddrinfo = socket.getaddrinfo
 
 
-def _getaddrinfo_v4(host: str, port: int | str, _family: int = 0, *args: object) -> list[object]:
+def _getaddrinfo_v4(host: str, port: int | str, _family: int = 0, *args: object) -> Any:
     return _orig_getaddrinfo(host, port, socket.AF_INET, *args)  # type: ignore[arg-type]
 
 
 if sys.platform == "win32":
-    socket.getaddrinfo = _getaddrinfo_v4
+    socket.getaddrinfo = _getaddrinfo_v4  # type: ignore[assignment]
 
 logger = structlog.get_logger("app.services.telegram_client")
 

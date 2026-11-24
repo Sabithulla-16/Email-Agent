@@ -98,10 +98,12 @@ class GroqService:
             self.settings.GROQ_DRAFT_MODEL,
         ]
         # Deduplicate while preserving order
-        seen_models = set()
-        models_to_try = [
-            m for m in candidate_models if not (m in seen_models or seen_models.add(m))
-        ]
+        seen_models: set[str] = set()
+        models_to_try: list[str] = []
+        for m in candidate_models:
+            if m and m not in seen_models:
+                seen_models.add(m)
+                models_to_try.append(m)
 
         last_error = ""
         for model_name in models_to_try:

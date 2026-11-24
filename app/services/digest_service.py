@@ -104,11 +104,12 @@ class DigestService:
             # If no analysis summary, use LLM with automatic model fallback
             if not summary_text:
                 try:
+                    snippet_content = em.snippet or em.subject
                     prompt = (
                         "Summarize this email in ONE very short sentence (max 15 words).\n"
                         f"From: {em.sender}\n"
                         f"Subject: {em.subject}\n"
-                        f"Content: {em.body_clean[:600]}\n"
+                        f"Content: {snippet_content[:600]}\n"
                     )
                     summary_text, _ = await self.groq_service.chat_completion_with_fallback(
                         messages=[{"role": "user", "content": prompt}],

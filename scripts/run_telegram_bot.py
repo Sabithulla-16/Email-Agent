@@ -93,12 +93,7 @@ async def async_main() -> None:
         httpx_kwargs={"verify": tg_client._ssl_ctx},
     )
 
-    application = (
-        ApplicationBuilder()
-        .token(token)
-        .request(request)
-        .build()
-    )
+    application = ApplicationBuilder().token(token).request(request).build()
 
     async def update_dispatcher(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update or not tg_service:

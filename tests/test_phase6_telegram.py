@@ -302,9 +302,8 @@ async def test_handle_start_command_without_token(telegram_service):
     call_kwargs = telegram_service.telegram_client.send_message.await_args.kwargs
     assert call_kwargs["chat_id"] == chat_id
     assert "Connect Gmail" in str(call_kwargs.get("reply_markup"))
-    expected_url = (
-        f"{telegram_service.settings.PUBLIC_BASE_URL.rstrip('/')}/api/v1/auth/google?chat_id={chat_id}"
-    )
+    base_url = telegram_service.settings.PUBLIC_BASE_URL.rstrip("/")
+    expected_url = f"{base_url}/api/v1/auth/google?chat_id={chat_id}"
     assert expected_url in str(call_kwargs.get("reply_markup"))
 
 

@@ -76,6 +76,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     # Free-tier In-Process Scheduler (runs periodic inbox sync inside Web Service)
     sync_task: asyncio.Task[None] | None = None
     if settings.ENABLE_IN_PROCESS_SCHEDULER and settings.ENVIRONMENT != "test":
+
         async def _background_scheduler_loop() -> None:
             await asyncio.sleep(15)  # initial warmup delay
             while True:
