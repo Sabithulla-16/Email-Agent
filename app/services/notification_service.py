@@ -185,27 +185,32 @@ class NotificationService:
             )
 
         # Build inline keyboard
-        keyboard = {
-            "inline_keyboard": [
-                [
-                    {"text": "✅ Approve & Send", "callback_data": t_approve},
-                    {"text": "✍️ Revise", "callback_data": t_revise},
-                    {"text": "❌ Reject", "callback_data": t_reject},
-                ],
-                [
-                    {"text": "⚡ Shorter", "callback_data": t_shorter},
-                    {"text": "👔 Formal", "callback_data": t_formal},
-                    {"text": "😊 Friendly", "callback_data": t_friendly},
-                    {"text": "🎯 Direct", "callback_data": t_firm},
-                ],
+        inline_rows = [
+            [
+                {"text": "✅ Approve & Send", "callback_data": t_approve},
+                {"text": "✍️ Revise", "callback_data": t_revise},
+                {"text": "❌ Reject", "callback_data": t_reject},
+            ],
+            [
+                {"text": "⚡ Shorter", "callback_data": t_shorter},
+                {"text": "👔 Formal", "callback_data": t_formal},
+                {"text": "😊 Friendly", "callback_data": t_friendly},
+                {"text": "🎯 Direct", "callback_data": t_firm},
+            ],
+        ]
+
+        frontend_url = self.settings.FRONTEND_BASE_URL.rstrip("/")
+        if frontend_url and not ("localhost" in frontend_url or "127.0.0.1" in frontend_url):
+            inline_rows.append(
                 [
                     {
                         "text": "🌐 View in Web App",
-                        "url": f"{self.settings.FRONTEND_BASE_URL}/drafts/{draft.id}",
+                        "url": f"{frontend_url}/drafts/{draft.id}",
                     }
-                ],
-            ]
-        }
+                ]
+            )
+
+        keyboard = {"inline_keyboard": inline_rows}
 
         # Build message body
         summary_text = analysis.summary if analysis else email.snippet or ""

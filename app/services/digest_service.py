@@ -116,16 +116,19 @@ class DigestService:
         # 4. Dispatch to Telegram if linked
         telegram_link = await self.telegram_repo.get_link_by_user_id(user.id)
         if telegram_link and telegram_link.is_active:
-            keyboard = {
-                "inline_keyboard": [
-                    [
-                        {
-                            "text": "📬 Review Pending Drafts",
-                            "url": f"{self.settings.FRONTEND_BASE_URL}/drafts",
-                        }
+            keyboard = None
+            frontend_url = self.settings.FRONTEND_BASE_URL.rstrip("/")
+            if frontend_url and not ("localhost" in frontend_url or "127.0.0.1" in frontend_url):
+                keyboard = {
+                    "inline_keyboard": [
+                        [
+                            {
+                                "text": "📬 Review Pending Drafts",
+                                "url": f"{frontend_url}/drafts",
+                            }
+                        ]
                     ]
-                ]
-            }
+                }
             await self.telegram_client.send_message(
                 chat_id=telegram_link.chat_id,
                 text=full_digest_text,
