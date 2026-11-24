@@ -28,6 +28,32 @@ from app.services.telegram_client import TelegramClient, escape_html
 
 logger = structlog.get_logger("app.services.telegram")
 
+_START_MESSAGE_IDS: dict[int, int] = {}
+
+
+async def save_start_message_id(chat_id: int, message_id: int) -> None:
+    """Track the 'Connect Gmail' message ID so it can be deleted after OAuth login."""
+    _START_MESSAGE_IDS[chat_id] = message_id
+    try:
+        redis = get_redis()
+        if redis:
+            await redis.set(f"tg:start_msg:{chat_id}", str(message_id), ex=86400)
+    except Exception:
+        pass
+
+
+async def get_start_message_id(chat_id: int) -> int | None:
+    """Retrieve the 'Connect Gmail' message ID for cleanup."""
+    try:
+        redis = get_redis()
+        if redis:
+            val = await redis.get(f"tg:start_msg:{chat_id}")
+            if val:
+                return int(val)
+    except Exception:
+        pass
+    return _START_MESSAGE_IDS.get(chat_id)
+
 
 class TelegramService:
     """Processes Telegram webhooks, links accounts, executes callbacks, and handles voice notes."""
@@ -347,7 +373,7 @@ class TelegramService:
                         ]
                     ]
                 }
-                await self.telegram_client.send_message(
+                sent_msg = await self.telegram_client.send_message(
                     chat_id=chat_id,
                     text=(
                         "👋 <b>Welcome to Email Agent!</b>\n\n"
@@ -357,6 +383,8 @@ class TelegramService:
                     ),
                     reply_markup=reply_markup,
                 )
+                if isinstance(sent_msg, dict) and sent_msg.get("message_id"):
+                    await save_start_message_id(chat_id, int(sent_msg["message_id"]))
             return
 
         # Authenticate existing linked user for subsequent commands

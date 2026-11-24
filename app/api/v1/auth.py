@@ -16,6 +16,7 @@ from app.db.repos.user_repo import UserRepo
 from app.models.db import UserRow, UserUpdate
 from app.services.auth_service import AuthService
 from app.services.telegram_client import TelegramClient
+from app.services.telegram_service import get_start_message_id
 
 logger = get_logger("app.api.v1.auth")
 
@@ -33,7 +34,13 @@ async def google_auth_start(
 ) -> Any:
     """Initiate Google OAuth 2.0 PKCE flow (supports Telegram bot linking via chat_id)."""
     verifier, challenge = auth_service.generate_pkce_pair()
-    client_state = f"tg_{chat_id}" if chat_id else "web"
+    msg_id = await get_start_message_id(chat_id) if chat_id else None
+    if chat_id and msg_id:
+        client_state = f"tg_{chat_id}_{msg_id}"
+    elif chat_id:
+        client_state = f"tg_{chat_id}"
+    else:
+        client_state = "web"
     # Embed encrypted verifier in signed state so callback works even if browser drops cookies
     state = auth_service.create_signed_state(code_verifier=verifier, client_state=client_state)
     auth_url = auth_service.build_authorization_url(code_challenge=challenge, state=state)
@@ -90,10 +97,21 @@ async def google_auth_callback(
     # If linked via Telegram chat_id
     if client_state and client_state.startswith("tg_"):
         try:
-            tg_chat_id = int(client_state[3:])
+            raw_parts = client_state[3:].split("_")
+            tg_chat_id = int(raw_parts[0])
+            msg_to_delete = (
+                int(raw_parts[1]) if len(raw_parts) > 1 and raw_parts[1].isdigit() else None
+            )
+            if not msg_to_delete:
+                msg_to_delete = await get_start_message_id(tg_chat_id)
+
             telegram_repo = TelegramRepo(get_supabase())
             await telegram_repo.link_chat(user_id=user.id, chat_id=tg_chat_id)
             tg_client = TelegramClient(telegram_repo=telegram_repo, settings=settings)
+
+            # Delete the previous "Connect Gmail" message to keep chat pristine
+            if msg_to_delete:
+                await tg_client.delete_message(chat_id=tg_chat_id, message_id=msg_to_delete)
 
             await tg_client.send_message(
                 chat_id=tg_chat_id,
