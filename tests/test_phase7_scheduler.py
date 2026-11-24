@@ -2,7 +2,7 @@
 
 import uuid
 from datetime import UTC, datetime, time, timedelta
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -332,3 +332,29 @@ async def test_run_user_sync_pipeline():
     assert res["drafts_created"] == 1
     approval_svc.generate_draft_for_email.assert_awaited_once_with(email1.id, str(user_id))
     notif_svc.notify_new_draft.assert_awaited_once()
+
+
+# =============================================================================
+# Cron API Endpoint Tests
+# =============================================================================
+@pytest.mark.asyncio
+async def test_cron_trigger_endpoint_unauthorized(client):
+    """Calling /api/v1/cron/trigger without auth raises 403."""
+    res = await client.get("/api/v1/cron/trigger")
+    assert res.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_cron_trigger_endpoint_authorized(client, test_settings):
+    """Calling /api/v1/cron/trigger with valid secret succeeds."""
+    with patch(
+        "app.api.v1.cron.run_direct_sync_cycle",
+        new_callable=AsyncMock,
+        return_value={"status": "success", "claimed_users": 0, "results": []},
+    ):
+        secret = test_settings.APP_SECRET_KEY.get_secret_value()
+        res = await client.get(f"/api/v1/cron/trigger?secret={secret}")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["ok"] is True
+        assert data["data"]["status"] == "success"

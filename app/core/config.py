@@ -124,6 +124,16 @@ class Settings(BaseSettings):
     EMBEDDING_DIMENSION: int = 384
     EMAIL_BODY_MAX_CHARS: int = 15000
 
+    # Free-tier In-Process Scheduler (runs inside Web Service without paid worker)
+    ENABLE_IN_PROCESS_SCHEDULER: bool = Field(
+        default=True,
+        description="Run periodic inbox sync inside the web service process",
+    )
+    IN_PROCESS_SYNC_INTERVAL_SECONDS: int = Field(
+        default=300,
+        description="Interval in seconds between periodic background sync cycles",
+    )
+
     # Sentry Error Tracking (Optional)
     SENTRY_DSN: SecretStr | None = None
 

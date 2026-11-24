@@ -48,6 +48,8 @@ async def client(test_settings: Settings) -> AsyncGenerator[AsyncClient, None]:
         patch("app.main.close_redis", new_callable=AsyncMock),
     ):
         app = create_app(test_settings)
+        from app.core.config import get_settings
+        app.dependency_overrides[get_settings] = lambda: test_settings
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
             yield ac

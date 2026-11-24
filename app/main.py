@@ -1,7 +1,8 @@
 """FastAPI Application Entrypoint."""
 
+import asyncio
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 import sentry_sdk
 from fastapi import FastAPI, Response, status
@@ -12,6 +13,7 @@ from app.core.logging import get_logger, setup_logging
 from app.core.middleware import register_exception_handlers, setup_middleware
 from app.db.client import check_supabase_health, close_supabase, init_supabase
 from app.queue.redis import check_redis_health, close_redis, init_redis
+from app.services.scheduler_runner import run_direct_sync_cycle
 from app.services.telegram_client import TelegramClient
 
 
@@ -71,7 +73,32 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception as exc:
             logger.error("telegram_webhook_startup_error", error=str(exc))
 
+    # Free-tier In-Process Scheduler (runs periodic inbox sync inside Web Service)
+    sync_task: asyncio.Task[None] | None = None
+    if settings.ENABLE_IN_PROCESS_SCHEDULER and settings.ENVIRONMENT != "test":
+        async def _background_scheduler_loop() -> None:
+            await asyncio.sleep(15)  # initial warmup delay
+            while True:
+                try:
+                    await run_direct_sync_cycle()
+                except asyncio.CancelledError:
+                    break
+                except Exception as loop_exc:
+                    logger.error("in_process_scheduler_loop_error", error=str(loop_exc))
+                await asyncio.sleep(settings.IN_PROCESS_SYNC_INTERVAL_SECONDS)
+
+        sync_task = asyncio.create_task(_background_scheduler_loop())
+        logger.info(
+            "in_process_scheduler_started",
+            interval_seconds=settings.IN_PROCESS_SYNC_INTERVAL_SECONDS,
+        )
+
     yield
+
+    if sync_task:
+        sync_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await sync_task
 
     logger.info("app_shutting_down")
     await close_redis()

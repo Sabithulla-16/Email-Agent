@@ -3,6 +3,7 @@
 from fastapi import APIRouter
 
 from app.api.v1.auth import router as auth_router
+from app.api.v1.cron import router as cron_router
 from app.api.v1.drafts import router as drafts_router
 from app.api.v1.emails import router as emails_router
 from app.api.v1.features import router as features_router
@@ -28,3 +29,6 @@ api_router.include_router(telegram_router)
 
 # Feature-Flagged Extensions
 api_router.include_router(features_router)
+
+# Free Tier & Serverless Cron Scheduling
+api_router.include_router(cron_router)
