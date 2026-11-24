@@ -68,7 +68,10 @@ class ApprovalService:
         self.user_repo = user_repo
         self.auth_service = auth_service
         self.settings = settings or get_settings()
-        self.groq_client = AsyncGroq(api_key=self.settings.GROQ_API_KEY.get_secret_value())
+        self.groq_client = AsyncGroq(
+            api_key=self.settings.GROQ_API_KEY.get_secret_value(),
+            max_retries=0,
+        )
 
     # -------------------------------------------------------------------------
     # State Transition Enforcer
@@ -113,6 +116,23 @@ class ApprovalService:
         if not email or email.user_id != UUID(str(user_id)):
             raise NotFoundError(f"Email {email_id} not found")
 
+        # Check if draft already exists for this email
+        try:
+            if hasattr(self.draft_repo, "get_by_email_id"):
+                res = self.draft_repo.get_by_email_id(email_id)
+                if hasattr(res, "__await__"):
+                    existing_draft = await res
+                    if existing_draft:
+                        logger.info(
+                            "draft_already_exists_for_email",
+                            email_id=str(email_id),
+                            draft_id=str(existing_draft.id),
+                            status=existing_draft.status.value,
+                        )
+                        return existing_draft
+        except Exception as exc:
+            logger.warning("draft_check_existing_failed", email_id=str(email_id), error=str(exc))
+
         # Check analysis safety & necessity
         analysis = await self.email_repo.get_analysis(email_id)
         if analysis:
@@ -140,16 +160,32 @@ class ApprovalService:
             f"</untrusted_email_content>"
         )
 
-        model_name = self.settings.GROQ_DRAFT_MODEL
-        resp = await self.groq_client.chat.completions.create(
-            model=model_name,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content},
-            ],
-            temperature=0.2,
-        )
-        draft_text = (resp.choices[0].message.content or "").strip()
+        candidate_models = [
+            self.settings.GROQ_DRAFT_MODEL,
+            getattr(self.settings, "GROQ_FALLBACK_MODEL", "qwen/qwen3.8-27b"),
+            self.settings.GROQ_FAST_MODEL,
+        ]
+        draft_text = ""
+        model_used = candidate_models[0]
+        for m in candidate_models:
+            try:
+                resp = await self.groq_client.chat.completions.create(
+                    model=m,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_content},
+                    ],
+                    temperature=0.2,
+                )
+                draft_text = (resp.choices[0].message.content or "").strip()
+                model_used = m
+                break
+            except Exception as exc:
+                logger.warning("draft_model_call_failed", model=m, error=str(exc))
+                continue
+
+        if not draft_text:
+            draft_text = f"Hi {email.sender},\n\nThank you for your email. I will follow up with you shortly.\n\n{sig}"
 
         # Create draft record (DRAFT_GENERATED)
         idempotency_key = f"draft_{uuid.uuid4().hex[:16]}"
@@ -171,7 +207,7 @@ class ApprovalService:
             body=draft_text,
             user_instruction="Initial automated draft",
             source="llm",
-            model=model_name,
+            model=model_used,
         )
 
         # Transition DRAFT_GENERATED -> PENDING_APPROVAL

@@ -130,6 +130,18 @@ async def run_user_sync_pipeline(ctx: dict[str, Any], user_id: str) -> dict[str,
                 "phishing" in f or "malware" in f for f in stored_analysis.risk_flags
             ):
                 try:
+                    if hasattr(draft_repo, "get_by_email_id"):
+                        res = draft_repo.get_by_email_id(full_email.id)
+                        if hasattr(res, "__await__"):
+                            existing_draft = await res
+                            if existing_draft:
+                                logger.info(
+                                    "skipping_draft_generation_already_exists",
+                                    email_id=str(full_email.id),
+                                    draft_id=str(existing_draft.id),
+                                )
+                                continue
+
                     draft = await approval_svc.generate_draft_for_email(full_email.id, user_id)
                     versions = await draft_repo.get_versions(draft.id)
                     if versions:

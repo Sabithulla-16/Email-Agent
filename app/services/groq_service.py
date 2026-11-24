@@ -36,9 +36,13 @@ class GroqService:
         concurrency_limit: int = 5,
     ) -> None:
         self.settings = settings or get_settings()
-        self.client = AsyncGroq(api_key=self.settings.GROQ_API_KEY.get_secret_value())
+        self.client = AsyncGroq(
+            api_key=self.settings.GROQ_API_KEY.get_secret_value(),
+            max_retries=0,
+        )
         self._semaphore = asyncio.Semaphore(concurrency_limit)
         self._system_prompt = self._load_system_prompt()
+        self._model_cooldowns: dict[str, float] = {}
 
     def _load_system_prompt(self) -> str:
         prompt_file = PROMPTS_DIR / f"{PROMPT_VERSION}.txt"
@@ -105,6 +109,12 @@ class GroqService:
                 seen_models.add(m)
                 models_to_try.append(m)
 
+        # Skip models currently on rate-limit cooldown unless all are on cooldown
+        now = time.monotonic()
+        active_models = [m for m in models_to_try if self._model_cooldowns.get(m, 0.0) <= now]
+        if active_models:
+            models_to_try = active_models
+
         last_error = ""
         for model_name in models_to_try:
             start_time = time.perf_counter()
@@ -147,6 +157,13 @@ class GroqService:
 
             except Exception as exc:
                 last_error = str(exc)
+                if "429" in last_error or "rate_limit" in last_error.lower():
+                    self._model_cooldowns[model_name] = time.monotonic() + 60.0
+                    logger.warning(
+                        "groq_model_rate_limited_entering_cooldown",
+                        model=model_name,
+                        cooldown_seconds=60,
+                    )
                 logger.warning(
                     "groq_analysis_call_failed_trying_fallback",
                     email_id=str(email.id),
@@ -280,6 +297,11 @@ class GroqService:
                 seen.add(m)
                 candidate_models.append(m)
 
+        now = time.monotonic()
+        active_models = [m for m in candidate_models if self._model_cooldowns.get(m, 0.0) <= now]
+        if active_models:
+            candidate_models = active_models
+
         last_exc: Exception | None = None
         for model in candidate_models:
             try:
@@ -298,11 +320,18 @@ class GroqService:
                 return content, model
             except Exception as exc:
                 last_exc = exc
-                err_str = str(exc).lower()
+                err_str = str(exc)
+                if "429" in err_str or "rate_limit" in err_str.lower():
+                    self._model_cooldowns[model] = time.monotonic() + 60.0
+                    logger.warning(
+                        "groq_model_rate_limited_entering_cooldown",
+                        model=model,
+                        cooldown_seconds=60,
+                    )
                 logger.warning(
                     "groq_model_call_failed_attempting_fallback",
                     failed_model=model,
-                    error=err_str,
+                    error=err_str.lower(),
                 )
                 continue
 

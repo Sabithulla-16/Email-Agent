@@ -180,3 +180,77 @@ async def test_groq_invalid_output_fallback_recovery() -> None:
         assert analysis.needs_reply is False
         assert analysis.confidence == 0.0
         assert "llm_analysis_failure" in analysis.risk_flags
+
+
+@pytest.mark.asyncio
+async def test_groq_model_cooldown_on_429() -> None:
+    """Ensure that when a model gets a 429 rate limit, it enters cooldown and is skipped."""
+    service = GroqService()
+    now = datetime.now(UTC)
+    email = EmailRow(
+        id=uuid4(),
+        user_id=uuid4(),
+        gmail_msg_id="rate_1",
+        thread_id="th_rate",
+        sender="Colleague <colleague@example.com>",
+        sender_email="colleague@example.com",
+        subject="Sprint review",
+        received_at=now,
+        snippet="Sprint review notes",
+        body_clean="Can you review the sprint doc?",
+        created_at=now,
+        updated_at=now,
+    )
+
+    valid_response = MagicMock()
+    valid_response.usage.prompt_tokens = 100
+    valid_response.usage.completion_tokens = 40
+    valid_response.choices = [
+        MagicMock(
+            message=MagicMock(
+                content=json.dumps(
+                    {
+                        "category": "work",
+                        "needs_reply": True,
+                        "priority": "medium",
+                        "summary": "Review sprint document.",
+                        "action_items": [],
+                        "deadline": None,
+                        "confidence": 0.9,
+                        "risk_flags": [],
+                    }
+                )
+            )
+        )
+    ]
+
+    call_count = 0
+
+    async def fake_create(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        model = kwargs.get("model")
+        # Fail the primary model with 429
+        if model == service.settings.GROQ_FAST_MODEL:
+            raise Exception("Error code: 429 - Rate limit reached for model openai/gpt-oss-120b")
+        # Succeed on fallback model
+        return valid_response
+
+    with (
+        patch.object(service.client.chat.completions, "create", side_effect=fake_create),
+        patch("asyncio.sleep", new_callable=AsyncMock),
+    ):
+        # First call triggers 429 on primary model and falls back
+        res1 = await service.analyze_email(email)
+        assert res1.category == "work"
+        assert res1.model != service.settings.GROQ_FAST_MODEL
+        assert service._model_cooldowns.get(service.settings.GROQ_FAST_MODEL, 0) > 0
+
+        # Reset call count
+        call_count = 0
+        # Second call immediately uses the active fallback model, skipping the cooled-down model
+        res2 = await service.analyze_email(email)
+        assert res2.category == "work"
+        # Should only make 1 call because the rate-limited model was skipped during cooldown!
+        assert call_count == 1
+

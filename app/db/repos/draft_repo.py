@@ -35,6 +35,23 @@ class DraftRepo(BaseRepo):
             return None
         return DraftRow.model_validate(data[0])
 
+    async def get_by_email_id(self, email_id: UUID | str) -> DraftRow | None:
+        async def _query() -> list[dict[str, Any]]:
+            res = (
+                await self.client.table("drafts")
+                .select("*")
+                .eq("email_id", str(email_id))
+                .order("created_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+            return cast(list[dict[str, Any]], res.data)
+
+        data = await self._execute_with_retry(_query)
+        if not data:
+            return None
+        return DraftRow.model_validate(data[0])
+
     async def list_by_user(
         self,
         user_id: UUID | str,
