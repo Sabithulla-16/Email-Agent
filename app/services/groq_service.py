@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import random
 import time
 from datetime import date
 from pathlib import Path
@@ -92,12 +91,20 @@ class GroqService:
     async def _call_groq_with_retries(
         self, email: EmailRow, user_message: str
     ) -> EmailAnalysisCreate:
-        """Execute Groq API call with exponential backoff on 429 and fallback on invalid output."""
-        max_attempts = self.settings.GROQ_MAX_RETRIES + 1
-        model_name = self.settings.GROQ_FAST_MODEL
+        """Execute Groq API call with model fallback and exponential backoff on 429."""
+        candidate_models = [
+            self.settings.GROQ_FAST_MODEL,
+            getattr(self.settings, "GROQ_FALLBACK_MODEL", "qwen/qwen3.8-27b"),
+            self.settings.GROQ_DRAFT_MODEL,
+        ]
+        # Deduplicate while preserving order
+        seen_models = set()
+        models_to_try = [
+            m for m in candidate_models if not (m in seen_models or seen_models.add(m))
+        ]
 
         last_error = ""
-        for attempt in range(max_attempts):
+        for model_name in models_to_try:
             start_time = time.perf_counter()
             try:
                 chat_completion = await self.client.chat.completions.create(
@@ -139,20 +146,15 @@ class GroqService:
             except Exception as exc:
                 last_error = str(exc)
                 logger.warning(
-                    "groq_analysis_call_failed",
+                    "groq_analysis_call_failed_trying_fallback",
                     email_id=str(email.id),
-                    attempt=attempt + 1,
+                    failed_model=model_name,
                     error=last_error,
                 )
+                await asyncio.sleep(0.5)
 
-                # Handle Rate Limit (HTTP 429)
-                delay = 1.0 * (2**attempt) + random.uniform(0.1, 0.5)  # noqa: S311
-                if "rate limit" in last_error.lower() or "429" in last_error:
-                    delay = max(delay, 2.0)
-                await asyncio.sleep(delay)
-
-        # Fallback record after all retries exhausted
-        logger.error("groq_analysis_all_retries_failed_using_fallback", email_id=str(email.id))
+        # Fallback record after all candidate models fail
+        logger.error("groq_analysis_all_models_failed_using_fallback", email_id=str(email.id))
         return self._create_fallback_analysis(email, reason=last_error)
 
     def _validate_and_parse_json(self, raw_json: str) -> dict[str, Any]:
@@ -262,11 +264,19 @@ class GroqService:
         Returns (content, model_name_used).
         """
         primary = primary_model or self.settings.GROQ_FAST_MODEL
-        # Order of fallback models: Qwen 2.5 32B, Llama 3.1 8B, Llama 3.3 70B
-        default_fallbacks = ["qwen-2.5-32b", "llama-3.1-8b-instant", "llama-3.3-70b-versatile"]
+        default_fallbacks = [
+            getattr(self.settings, "GROQ_FALLBACK_MODEL", "qwen/qwen3.8-27b"),
+            self.settings.GROQ_DRAFT_MODEL,
+        ]
         fallbacks = fallback_models or default_fallbacks
 
-        candidate_models = [primary] + [m for m in fallbacks if m != primary]
+        # Ensure order and avoid duplicates
+        seen = set()
+        candidate_models = []
+        for m in [primary] + fallbacks:
+            if m not in seen:
+                seen.add(m)
+                candidate_models.append(m)
 
         last_exc: Exception | None = None
         for model in candidate_models:

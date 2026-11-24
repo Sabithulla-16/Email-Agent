@@ -58,12 +58,16 @@ class Settings(BaseSettings):
         description="Groq Cloud API Key",
     )
     GROQ_FAST_MODEL: str = Field(
-        default="llama-3.1-8b-instant",
-        description="Model for fast classification, summaries, and action extraction",
+        default="openai/gpt-oss-120b",
+        description="Primary model for classification, summaries, action extraction, and Q&A",
     )
     GROQ_DRAFT_MODEL: str = Field(
-        default="llama-3.3-70b-versatile",
+        default="openai/gpt-oss-20b",
         description="Model for draft generation and revision loops",
+    )
+    GROQ_FALLBACK_MODEL: str = Field(
+        default="qwen/qwen3.8-27b",
+        description="Fallback model when primary models reach rate limits or quota",
     )
     GROQ_WHISPER_MODEL: str = Field(
         default="whisper-large-v3-turbo",

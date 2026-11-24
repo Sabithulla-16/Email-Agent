@@ -1,4 +1,4 @@
-"""Inbox Q&A engine with grounded citations over email archives using Groq LLMs."""
+"""Inbox Q&A engine powered by Groq LLMs over daily digested email archives."""
 
 import re
 from typing import Any
@@ -12,18 +12,9 @@ from app.services.groq_service import GroqService
 
 logger = structlog.get_logger("app.services.inbox_qa")
 
-STOP_WORDS = {
-    "a", "about", "all", "an", "any", "are", "as", "at", "be", "by", "check",
-    "did", "do", "does", "email", "emails", "find", "for", "from", "get", "got",
-    "had", "has", "have", "i", "in", "is", "it", "mail", "mails", "me", "message",
-    "messages", "my", "of", "on", "or", "received", "regarding", "see", "show",
-    "tell", "that", "the", "there", "this", "to", "was", "were", "what", "when",
-    "which", "who", "with", "would", "you", "your",
-}
-
 
 class InboxQAService:
-    """Answers user natural language questions grounded exclusively in their email archive."""
+    """Answers user natural language questions grounded in their digested email archive."""
 
     def __init__(
         self,
@@ -41,92 +32,69 @@ class InboxQAService:
         self,
         user_id: UUID | str,
         query: str,
-        limit: int = 5,
+        limit: int = 50,
     ) -> dict[str, Any]:
-        """Retrieve relevant email records and generate a grounded, cited answer."""
-        # 1. Clean query and extract non-stopword tokens
-        cleaned_query = re.sub(r"[^\w\s]", " ", query.lower())
-        tokens = [t for t in cleaned_query.split() if t not in STOP_WORDS and len(t) > 1]
-        if not tokens:
-            tokens = [t for t in cleaned_query.split() if len(t) > 1]
-
-        # 2. Retrieve candidate emails from user
-        emails = await self.email_repo.list_by_user(user_id=user_id, limit=50)
-
-        # 3. Score relevance strictly
-        ranked = []
-        for e in emails:
-            score = 0
-            sender_text = f"{e.sender} {e.sender_email}".lower()
-            subject_text = e.subject.lower()
-            body_text = f"{e.snippet or ''} {e.body_clean}".lower()
-
-            for tok in tokens:
-                if tok in sender_text:
-                    score += 10
-                if tok in subject_text:
-                    score += 8
-                if tok in body_text:
-                    score += 3
-
-            if score > 0:
-                ranked.append((score, e))
-
-        # 4. Strict fast path: if no email matches the query tokens, do not hallucinate
-        if not ranked:
+        """Answer natural language question based on the user's digested email catalog."""
+        # 1. Fetch recent synced emails for the user
+        emails = await self.email_repo.list_by_user(user_id=user_id, limit=limit)
+        if not emails:
             return {
-                "answer": (
-                    f"I checked your inbox and found no emails regarding '{query.strip()}'."
-                ),
+                "answer": "I checked your inbox and found no emails in your account.",
                 "citations": [],
             }
 
-        ranked.sort(key=lambda x: x[0], reverse=True)
-        top_items = [item[1] for item in ranked[:limit]]
+        # 2. Build digested email catalog (Sender, Subject, Date, Summary)
+        catalog_entries: list[str] = []
+        indexed_emails: dict[int, Any] = {}
 
-        # 5. Build grounded context with full email bodies
-        context_parts: list[str] = []
-        citations: list[dict[str, Any]] = []
+        for idx, em in enumerate(emails, start=1):
+            indexed_emails[idx] = em
+            # Retrieve cached analysis summary or generate fallback digest
+            summary_text = ""
+            try:
+                analysis = await self.email_repo.get_analysis(em.id)
+                if analysis and analysis.summary:
+                    summary_text = analysis.summary
+            except Exception:
+                pass
 
-        for idx, item in enumerate(top_items, 1):
-            full_email = await self.email_repo.get_by_id(item.id)
-            if not full_email:
-                continue
+            if not summary_text:
+                summary_text = (em.snippet or em.subject or "No content available.")[:250]
 
-            cite_ref = f"Email #{idx}"
-            citations.append(
-                {
-                    "ref": cite_ref,
-                    "id": str(full_email.id),
-                    "sender": full_email.sender,
-                    "subject": full_email.subject,
-                    "date": full_email.received_at.isoformat(),
-                }
-            )
-            context_parts.append(
-                f"[{cite_ref}]\n"
-                f"Date: {full_email.received_at}\n"
-                f"From: {full_email.sender} <{full_email.sender_email}>\n"
-                f"Subject: {full_email.subject}\n"
-                f"Content:\n{full_email.body_clean[:1200]}\n"
+            date_str = em.received_at.strftime("%Y-%m-%d %H:%M") if em.received_at else "Recent"
+            catalog_entries.append(
+                f"[Email #{idx}]\n"
+                f"Date: {date_str}\n"
+                f"From: {em.sender} <{em.sender_email}>\n"
+                f"Subject: {em.subject}\n"
+                f"Digest: {summary_text.strip()}\n"
             )
 
-        grounded_context = "\n---\n".join(context_parts)
+        catalog_text = "\n---\n".join(catalog_entries)
 
-        # 6. Call Groq LLM with strict grounding and model fallback
+        # 3. Formulate grounded prompt for Groq LLM
         prompt = (
-            "You are a factual, strict AI email assistant answering questions based solely "
-            "on the user's emails.\n"
-            "CRITICAL RULES:\n"
-            "1. Answer using ONLY the facts explicitly stated in the email archive context below.\n"
-            "2. If the context does NOT contain information to answer the question, state: "
-            "'Based on your emails, there is no information about that.'\n"
-            "3. NEVER fabricate, hallucinate, or assume email senders, subjects, or accounts.\n"
-            "4. Cite the source email using bracketed notation like [Email #1].\n\n"
-            f"<email_archive_context>\n{grounded_context}\n</email_archive_context>\n\n"
+            "You are an intelligent, factual AI email assistant answering user questions "
+            "based strictly on their digested emails below.\n\n"
+            "CRITICAL INSTRUCTIONS:\n"
+            "1. Base your answer ONLY on the facts present in the digested email catalog.\n"
+            "2. If the user asks whether they received any email regarding a specific sender, "
+            "product, company, or topic (e.g. Spotify, flights, invoices, passwords):\n"
+            "   - If matching emails exist in the catalog, answer clearly using the digest details "
+            "and cite the source using [Email #X].\n"
+            "   - If NO email in the catalog is about that topic or sender, state clearly: "
+            "'I checked your emails and you haven't received any emails regarding [topic].' "
+            "Do NOT cite or mention unrelated emails.\n"
+            "3. NEVER fabricate an email citation or mention an [Email #X] tag that does "
+            "not exist.\n"
+            "4. Only cite [Email #X] for emails that directly answer the inquiry.\n\n"
+            "<digested_email_catalog>\n"
+            f"{catalog_text}\n"
+            "</digested_email_catalog>\n\n"
             f"User Question: {query}"
         )
 
+        # 4. Invoke LLM with automatic model fallback (gpt-oss-120b -> qwen3.8-27b -> gpt-oss-20b)
         try:
             answer_text, _ = await self.groq_service.chat_completion_with_fallback(
                 messages=[{"role": "user", "content": prompt}],
@@ -134,13 +102,43 @@ class InboxQAService:
             )
         except Exception as exc:
             logger.warning("inbox_qa_fallback_error", error=str(exc))
-            # Fallback direct call if mock is active in tests
-            resp = await self.groq_client.chat.completions.create(
-                model=self.settings.GROQ_FAST_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.1,
+            try:
+                resp = await self.groq_client.chat.completions.create(
+                    model=self.settings.GROQ_FAST_MODEL,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.1,
+                )
+                answer_text = (resp.choices[0].message.content or "").strip()
+            except Exception as direct_exc:
+                logger.error("inbox_qa_all_models_failed", error=str(direct_exc))
+                return {
+                    "answer": f"Unable to process question right now: {direct_exc}",
+                    "citations": [],
+                }
+
+        # 5. Extract only valid citations explicitly referenced in the LLM's answer
+        cited_indices = set()
+        matches = re.findall(r"Email\s*#(\d+)", answer_text, re.IGNORECASE)
+        for m in matches:
+            try:
+                num = int(m)
+                if num in indexed_emails:
+                    cited_indices.add(num)
+            except ValueError:
+                continue
+
+        citations: list[dict[str, Any]] = []
+        for idx in sorted(cited_indices):
+            em = indexed_emails[idx]
+            citations.append(
+                {
+                    "ref": f"Email #{idx}",
+                    "id": str(em.id),
+                    "sender": em.sender,
+                    "subject": em.subject,
+                    "date": em.received_at.isoformat() if em.received_at else "",
+                }
             )
-            answer_text = (resp.choices[0].message.content or "").strip()
 
         return {
             "answer": answer_text,

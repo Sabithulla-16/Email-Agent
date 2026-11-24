@@ -293,6 +293,16 @@ async def test_inbox_qa_unrelated_query_no_hallucination():
     email_repo.list_by_user = AsyncMock(return_value=[unrelated_email])
     service = InboxQAService(email_repo=email_repo)
 
+    mock_chat_resp = MagicMock()
+    mock_chat_resp.choices = [
+        MagicMock(
+            message=MagicMock(
+                content="I checked your emails and you have no emails regarding Spotify."
+            )
+        )
+    ]
+    service.groq_client.chat.completions.create = AsyncMock(return_value=mock_chat_resp)
+
     res = await service.answer_question(
         user_id=user_id, query="do i received any mails regarding spotify?"
     )
