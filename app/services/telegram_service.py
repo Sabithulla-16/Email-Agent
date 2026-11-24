@@ -765,7 +765,15 @@ class TelegramService:
             return
 
         audio_bytes = await self.telegram_client.download_file(file_path)
-        transcript = await self.groq_service.transcribe_audio(audio_bytes, filename="voice.ogg")
+        user_groq_key: str | None = None
+        if self.auth_service and hasattr(self.auth_service, "get_user_groq_api_key"):
+            try:
+                user_groq_key = await self.auth_service.get_user_groq_api_key(link.user_id)
+            except Exception:
+                user_groq_key = None
+        transcript = await self.groq_service.transcribe_audio(
+            audio_bytes, filename="voice.ogg", api_key=user_groq_key
+        )
 
         # Check for active pending interaction
         pending = await self.telegram_repo.get_and_clear_pending_interaction(chat_id)

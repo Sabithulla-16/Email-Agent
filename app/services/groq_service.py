@@ -264,10 +264,16 @@ class GroqService:
             latency_ms=0,
         )
 
-    async def transcribe_audio(self, audio_bytes: bytes, filename: str = "voice.ogg") -> str:
+    async def transcribe_audio(
+        self,
+        audio_bytes: bytes,
+        filename: str = "voice.ogg",
+        api_key: str | None = None,
+    ) -> str:
         """Transcribe Telegram voice notes using Groq Whisper."""
+        client = self.get_client(api_key)
         try:
-            transcription = await self.client.audio.transcriptions.create(
+            transcription = await client.audio.transcriptions.create(
                 model=self.settings.GROQ_WHISPER_MODEL,
                 file=(filename, audio_bytes),
                 language="en",
