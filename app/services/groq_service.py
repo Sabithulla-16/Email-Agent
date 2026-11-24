@@ -247,3 +247,53 @@ class GroqService:
         except Exception as exc:
             logger.error("groq_whisper_transcription_failed", error=str(exc))
             raise ExternalServiceError(f"Failed to transcribe audio note: {exc}") from exc
+
+    async def chat_completion_with_fallback(
+        self,
+        messages: list[dict[str, str]],
+        primary_model: str | None = None,
+        fallback_models: list[str] | None = None,
+        temperature: float = 0.2,
+        max_tokens: int | None = None,
+    ) -> tuple[str, str]:
+        """Call Groq chat completion with automatic fallback to secondary models on rate limit.
+
+        Catches 429 rate limit errors or capacity issues and tries fallbacks (e.g. Qwen, Llama).
+        Returns (content, model_name_used).
+        """
+        primary = primary_model or self.settings.GROQ_FAST_MODEL
+        # Order of fallback models: Qwen 2.5 32B, Llama 3.1 8B, Llama 3.3 70B
+        default_fallbacks = ["qwen-2.5-32b", "llama-3.1-8b-instant", "llama-3.3-70b-versatile"]
+        fallbacks = fallback_models or default_fallbacks
+
+        candidate_models = [primary] + [m for m in fallbacks if m != primary]
+
+        last_exc: Exception | None = None
+        for model in candidate_models:
+            try:
+                kwargs: dict[str, Any] = {
+                    "model": model,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "timeout": self.settings.GROQ_TIMEOUT_SECONDS,
+                }
+                if max_tokens:
+                    kwargs["max_tokens"] = max_tokens
+
+                resp = await self.client.chat.completions.create(**kwargs)
+                content = (resp.choices[0].message.content or "").strip()
+                logger.info("groq_completion_succeeded", model=model)
+                return content, model
+            except Exception as exc:
+                last_exc = exc
+                err_str = str(exc).lower()
+                logger.warning(
+                    "groq_model_call_failed_attempting_fallback",
+                    failed_model=model,
+                    error=err_str,
+                )
+                continue
+
+        if last_exc:
+            raise last_exc
+        return "", candidate_models[0]

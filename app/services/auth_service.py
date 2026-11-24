@@ -129,7 +129,7 @@ class AuthService:
         self,
         code_challenge: str,
         state: str,
-        prompt_consent: bool = True,
+        prompt_consent: bool = False,
         extra_scopes: list[str] | None = None,
     ) -> str:
         """Build Google OAuth 2.0 authorization URL with PKCE."""
@@ -149,9 +149,8 @@ class AuthService:
             "state": state,
             "code_challenge": code_challenge,
             "code_challenge_method": "S256",
+            "prompt": "consent" if prompt_consent else "select_account",
         }
-        if prompt_consent:
-            params["prompt"] = "consent"
 
         return f"{GOOGLE_AUTH_URL}?{httpx.QueryParams(params)}"
 

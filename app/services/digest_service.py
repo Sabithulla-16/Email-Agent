@@ -13,6 +13,7 @@ from app.db.repos.email_repo import EmailRepo
 from app.db.repos.telegram_repo import TelegramRepo
 from app.db.repos.user_repo import UserRepo
 from app.models.db import DraftStatus
+from app.services.groq_service import GroqService
 from app.services.telegram_client import TelegramClient, escape_html
 
 logger = structlog.get_logger("app.services.digest")
@@ -50,6 +51,7 @@ class DigestService:
         draft_repo: DraftRepo,
         telegram_repo: TelegramRepo,
         telegram_client: TelegramClient | None = None,
+        groq_service: GroqService | None = None,
         settings: Settings | None = None,
     ) -> None:
         self.user_repo = user_repo
@@ -60,6 +62,7 @@ class DigestService:
         self.telegram_client = telegram_client or TelegramClient(
             telegram_repo=telegram_repo, settings=self.settings
         )
+        self.groq_service = groq_service or GroqService(settings=self.settings)
 
     async def generate_and_dispatch_digest(self, user_id: UUID | str) -> dict[str, Any]:
         """Compile email activity from the past 24 hours and send daily digest."""
@@ -73,7 +76,7 @@ class DigestService:
             return {"status": "skipped", "reason": "digest_disabled_in_prefs"}
 
         # 1. Fetch recent emails and pending drafts
-        emails = await self.email_repo.list_by_user(user_id=user.id, limit=100)
+        emails = await self.email_repo.list_by_user(user_id=user.id, limit=20)
         pending_drafts = await self.draft_repo.list_by_user(
             user_id=user.id, status=DraftStatus.PENDING_APPROVAL.value, limit=50
         )
@@ -81,22 +84,57 @@ class DigestService:
         total_emails = len(emails)
         total_pending = len(pending_drafts)
 
-        # 2. Build category counts
-        category_counts: dict[str, int] = {}
+        # 2. Generate short summaries for recent emails with Qwen/Llama fallback
+        email_summaries: list[dict[str, str]] = []
         urgent_emails: list[str] = []
 
-        for em in emails:
-            cat = "inbox"
-            category_counts[cat] = category_counts.get(cat, 0) + 1
+        for em in emails[:6]:
             if "urgent" in em.subject.lower():
                 urgent_emails.append(em.subject)
 
+            summary_text = ""
+            # Check if email already has a saved analysis summary
+            try:
+                analysis = await self.email_repo.get_analysis(em.id)
+                if analysis and analysis.summary:
+                    summary_text = analysis.summary
+            except Exception:
+                pass
+
+            # If no analysis summary, use LLM with automatic model fallback
+            if not summary_text:
+                try:
+                    prompt = (
+                        "Summarize this email in ONE very short sentence (max 15 words).\n"
+                        f"From: {em.sender}\n"
+                        f"Subject: {em.subject}\n"
+                        f"Content: {em.body_clean[:600]}\n"
+                    )
+                    summary_text, _ = await self.groq_service.chat_completion_with_fallback(
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=0.2,
+                        max_tokens=50,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "digest_email_summary_failed", email_id=str(em.id), error=str(exc)
+                    )
+                    # Safe fallback snippet without server crashing
+                    summary_text = (em.snippet or em.subject)[:100]
+
+            email_summaries.append(
+                {
+                    "sender": em.sender,
+                    "subject": em.subject,
+                    "summary": summary_text,
+                }
+            )
+
         # 3. Format clean HTML digest
         digest_lines = [
-            f"☀️ <b>Good Morning, {escape_html(user.name or 'there')}!</b>\n",
-            "Here is your daily email executive summary:\n",
-            f"• <b>Total Received (24h):</b> {total_emails}",
-            f"• <b>Drafts Waiting for Approval:</b> {total_pending}\n",
+            f"☀️ <b>Daily Executive Digest for {escape_html(user.name or 'there')}</b>\n",
+            f"• <b>Total Received:</b> {total_emails}",
+            f"• <b>Drafts Ready for Approval:</b> {total_pending}\n",
         ]
 
         if urgent_emails:
@@ -105,10 +143,19 @@ class DigestService:
                 digest_lines.append(f"• {escape_html(subj)}")
             digest_lines.append("")
 
+        if email_summaries:
+            digest_lines.append("📬 <b>Recent Emails Summary:</b>")
+            for item in email_summaries:
+                sender = escape_html(item["sender"])
+                subject = escape_html(item["subject"])
+                summ = escape_html(item["summary"])
+                digest_lines.append(f"• <b>{sender}:</b> {subject}\n  └ <i>{summ}</i>")
+            digest_lines.append("")
+
         if total_pending > 0:
             digest_lines.append(
                 f"👉 <i>You have {total_pending} draft(s) awaiting review. "
-                "Type /pending to review or visit the web app.</i>"
+                "Type /pending to review and approve.</i>"
             )
 
         full_digest_text = "\n".join(digest_lines)

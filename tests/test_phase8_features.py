@@ -270,3 +270,31 @@ async def test_inbox_qa_grounded_answer():
     assert "$450,000" in res["answer"]
     assert len(res["citations"]) == 1
     assert res["citations"][0]["ref"] == "Email #1"
+
+
+@pytest.mark.asyncio
+async def test_inbox_qa_unrelated_query_no_hallucination():
+    user_id = uuid.uuid4()
+    now = datetime.now(UTC)
+    email_repo = MagicMock()
+    unrelated_email = EmailRow(
+        id=uuid.uuid4(),
+        user_id=user_id,
+        gmail_msg_id="msg_chess",
+        thread_id="th_chess",
+        sender="Chess.com",
+        sender_email="support@chess.com",
+        subject="Black Friday Sale Starts Now!",
+        body_clean="Special offer for diamond membership.",
+        received_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    email_repo.list_by_user = AsyncMock(return_value=[unrelated_email])
+    service = InboxQAService(email_repo=email_repo)
+
+    res = await service.answer_question(
+        user_id=user_id, query="do i received any mails regarding spotify?"
+    )
+    assert "no emails regarding" in res["answer"].lower()
+    assert len(res["citations"]) == 0
