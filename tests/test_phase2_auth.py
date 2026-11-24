@@ -207,8 +207,9 @@ async def test_google_auth_callback_telegram_redirect(client: AsyncClient) -> No
         )
         assert res.status_code == 200
         assert "text/html" in res.headers.get("content-type", "")
-        assert "Return to Telegram" in res.text
-        assert "https://t.me/TestEmailAgentBot" in res.text
+        assert "Return to Chat" in res.text
+        assert "Closing window in" in res.text
+        assert "telegram-web-app.js" in res.text
         assert "session_token" in res.cookies
 
 

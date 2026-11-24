@@ -87,7 +87,6 @@ async def google_auth_callback(
         ip=ip,
     )
 
-    tg_url: str | None = None
     # If linked via Telegram chat_id
     if client_state and client_state.startswith("tg_"):
         try:
@@ -95,9 +94,6 @@ async def google_auth_callback(
             telegram_repo = TelegramRepo(get_supabase())
             await telegram_repo.link_chat(user_id=user.id, chat_id=tg_chat_id)
             tg_client = TelegramClient(telegram_repo=telegram_repo, settings=settings)
-            bot_info = await tg_client.get_me()
-            bot_username = bot_info.get("username") if isinstance(bot_info, dict) else None
-            tg_url = f"https://t.me/{bot_username}" if bot_username else "tg://resolve"
 
             await tg_client.send_message(
                 chat_id=tg_chat_id,
@@ -111,7 +107,6 @@ async def google_auth_callback(
             logger.info("telegram_chat_linked_via_oauth", user_id=str(user.id), chat_id=tg_chat_id)
         except Exception as exc:
             logger.warning("failed_to_link_telegram_chat", error=str(exc))
-            tg_url = "tg://resolve"
 
     csrf_token = auth_service.generate_csrf_token()
 
@@ -136,9 +131,8 @@ async def google_auth_callback(
         )
         resp.delete_cookie("oauth_verifier", path="/")
 
-    # 1. Telegram OAuth flow: Return modern redirect HTML to take user back to Telegram
+    # 1. Telegram OAuth flow: Return HTML with 3..2..1 countdown and close the in-app tab
     if client_state and client_state.startswith("tg_"):
-        target_tg_url = tg_url or "tg://resolve"
         esc_email = html.escape(user.email)
         tg_html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -146,6 +140,7 @@ async def google_auth_callback(
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Gmail Connected - Email Agent</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
     * {{ box-sizing: border-box; margin: 0; padding: 0; }}
     body {{
@@ -203,6 +198,8 @@ async def google_auth_callback(
       font-weight: 600;
       text-decoration: none;
       padding: 0.9rem 1.5rem;
+      border: none;
+      cursor: pointer;
       border-radius: 0.75rem;
       font-size: 1rem;
       transition: background 0.2s;
@@ -212,8 +209,13 @@ async def google_auth_callback(
     }}
     .hint {{
       margin-top: 1rem;
-      font-size: 0.8rem;
-      color: #64748b;
+      font-size: 0.85rem;
+      color: #94a3b8;
+    }}
+    .countdown {{
+      font-weight: 700;
+      color: #38bdf8;
+      font-size: 1.1rem;
     }}
   </style>
 </head>
@@ -223,13 +225,38 @@ async def google_auth_callback(
     <h1>Gmail Connected!</h1>
     <p>Your Google account has been linked to your Telegram email assistant.</p>
     <div class="email-box">{esc_email}</div>
-    <a href="{target_tg_url}" class="btn" id="returnBtn">Return to Telegram</a>
-    <p class="hint">Returning to Telegram automatically...</p>
+    <button onclick="closeTab()" class="btn" id="returnBtn">✓ Done — Return to Chat</button>
+    <p class="hint" id="status-hint">
+      Closing window in <span class="countdown" id="countdown">3</span>s...
+    </p>
   </div>
   <script>
-    setTimeout(function() {{
-      window.location.href = "{target_tg_url}";
-    }}, 1200);
+    function closeTab() {{
+      try {{
+        if (window.Telegram && window.Telegram.WebApp) {{
+          window.Telegram.WebApp.ready();
+          window.Telegram.WebApp.close();
+        }}
+      }} catch (e) {{}}
+      try {{
+        window.close();
+      }} catch (e) {{}}
+      var h = document.getElementById("status-hint");
+      if (h) {{
+        h.innerHTML = "You're all set! Tap the <b>✕</b> at top left to return to chat.";
+      }}
+    }}
+
+    var seconds = 3;
+    var timer = setInterval(function() {{
+      seconds--;
+      var el = document.getElementById("countdown");
+      if (el) el.innerText = seconds;
+      if (seconds <= 0) {{
+        clearInterval(timer);
+        closeTab();
+      }}
+    }}, 1000);
   </script>
 </body>
 </html>"""

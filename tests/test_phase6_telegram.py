@@ -206,6 +206,7 @@ async def test_notify_new_draft_creates_single_use_tokens(notif_service):
 @pytest.fixture
 def telegram_service():
     tg_repo = MagicMock()
+    tg_repo.get_link_by_chat_id = AsyncMock(return_value=None)
     user_repo = MagicMock()
     email_repo = MagicMock()
     draft_repo = MagicMock()
@@ -305,6 +306,49 @@ async def test_handle_start_command_without_token(telegram_service):
         f"{telegram_service.settings.PUBLIC_BASE_URL.rstrip('/')}/api/v1/auth/google?chat_id={chat_id}"
     )
     assert expected_url in str(call_kwargs.get("reply_markup"))
+
+
+@pytest.mark.asyncio
+async def test_handle_start_command_when_already_linked(telegram_service):
+    chat_id = 998877
+    user_id = uuid.uuid4()
+    now = datetime.now(UTC)
+    active_link = TelegramLinkRow(
+        user_id=user_id,
+        chat_id=chat_id,
+        is_active=True,
+        linked_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    mock_user = UserRow(
+        id=user_id,
+        google_sub="sub-linked",
+        email="linkeduser@example.com",
+        name="Valtry",
+        created_at=now,
+        updated_at=now,
+    )
+    telegram_service.telegram_repo.get_link_by_chat_id = AsyncMock(return_value=active_link)
+    telegram_service.user_repo.get_by_id = AsyncMock(return_value=mock_user)
+
+    update = {
+        "update_id": 1003,
+        "message": {
+            "chat": {"id": chat_id},
+            "text": "/start",
+        },
+    }
+
+    with patch("app.services.telegram_service.get_redis", return_value=None):
+        await telegram_service.process_webhook_update(update)
+
+    telegram_service.telegram_client.send_message.assert_awaited_once()
+    call_kwargs = telegram_service.telegram_client.send_message.await_args.kwargs
+    assert call_kwargs["chat_id"] == chat_id
+    assert "Welcome back, Valtry!" in call_kwargs["text"]
+    assert "linkeduser@example.com" in call_kwargs["text"]
+    assert call_kwargs.get("reply_markup") is None
 
 
 # =============================================================================

@@ -291,6 +291,9 @@ class TelegramService:
         parts = command_text.split()
         cmd = parts[0].lower()
 
+        # Check existing chat linkage
+        link = await self.telegram_repo.get_link_by_chat_id(chat_id)
+
         # Handle /start with or without token
         if cmd == "/start":
             if len(parts) > 1:
@@ -312,6 +315,25 @@ class TelegramService:
                         chat_id=chat_id,
                         text="❌ <b>Link expired or invalid.</b> Please generate a new link.",
                     )
+            elif link and getattr(link, "is_active", False) is True:
+                user = await self.user_repo.get_by_id(link.user_id)
+                user_email = user.email if user else "your Gmail"
+                user_name = user.name if user and user.name else "there"
+                await self.telegram_client.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        f"👋 <b>Welcome back, {escape_html(user_name)}!</b>\n\n"
+                        f"Your Telegram is already linked to "
+                        f"<code>{escape_html(user_email)}</code>.\n\n"
+                        f"<b>Quick Actions:</b>\n"
+                        f"• /pending — Review drafts awaiting approval\n"
+                        f"• /sync — Pull new emails immediately\n"
+                        f"• /digest — Generate your daily digest\n"
+                        f"• /urgent — View urgent unread emails\n"
+                        f"• /help — View all commands\n\n"
+                        f"<i>You can also ask me any question about your inbox directly!</i>"
+                    ),
+                )
             else:
                 base = self.settings.PUBLIC_BASE_URL.rstrip("/")
                 connect_url = f"{base}/api/v1/auth/google?chat_id={chat_id}"
@@ -338,7 +360,6 @@ class TelegramService:
             return
 
         # Authenticate existing linked user for subsequent commands
-        link = await self.telegram_repo.get_link_by_chat_id(chat_id)
         if not link:
             await self.telegram_client.send_message(
                 chat_id=chat_id,
