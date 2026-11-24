@@ -303,10 +303,8 @@ async def handle_setkey(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     # Delete the message containing the raw API key for privacy
-    try:
+    with contextlib.suppress(Exception):
         await update.message.delete()
-    except Exception:
-        pass
 
     args = context.args or []
     if not args:
@@ -316,7 +314,8 @@ async def handle_setkey(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 "ℹ️ <b>How to set your Groq API key:</b>\n\n"
                 "Send: <code>/setkey gsk_your_groq_key_here</code>\n\n"
                 "<i>(Get a free key in 30 seconds at https://console.groq.com/keys)</i>\n"
-                "<i>Your key is encrypted with AES-256 and your message is deleted immediately for privacy.</i>"
+                "<i>Your key is encrypted with AES-256 and your message is "
+                "deleted immediately for privacy.</i>"
             ),
             parse_mode="HTML",
         )
@@ -331,26 +330,23 @@ async def handle_setkey(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     auth_svc = AuthService(user_repo=user_repo, settings=get_settings())
     try:
         masked = await auth_svc.set_user_groq_api_key(link.user_id, raw_key)
-        try:
+        with contextlib.suppress(Exception):
             await status_msg.delete()
-        except Exception:
-            pass
         await context.bot.send_message(
             chat_id=chat_id,
             text=(
                 "✅ <b>Groq API Key Configured Successfully!</b>\n\n"
                 f"• Key: <code>{masked}</code>\n"
                 f"• Encryption: <b>AES-256-GCM</b>\n\n"
-                "All email summaries, triage analysis, and reply drafts will now run on your dedicated Groq quota.\n"
+                "All email summaries, triage analysis, and reply drafts will now run "
+                "on your dedicated Groq quota.\n"
                 "Use /mykey to view status or /removekey to delete it."
             ),
             parse_mode="HTML",
         )
     except Exception as exc:
-        try:
+        with contextlib.suppress(Exception):
             await status_msg.delete()
-        except Exception:
-            pass
         await context.bot.send_message(
             chat_id=chat_id,
             text=f"❌ <b>Failed to set Groq key:</b> {exc}",

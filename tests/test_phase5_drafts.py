@@ -64,6 +64,22 @@ def test_build_mime_reply_subject_already_re():
     assert msg["Subject"] == "Re: Project Update"
 
 
+def test_build_mime_composed_email_no_re_prefix():
+    raw_b64 = build_mime_reply(
+        from_addr="alex@example.com",
+        to_addr="sam@client.com",
+        subject="Quarterly Roadmap Update",
+        body="Here is our roadmap for Q3.",
+        is_reply=False,
+    )
+    decoded_bytes = base64.urlsafe_b64decode(raw_b64.encode("ascii"))
+    msg = email.message_from_bytes(decoded_bytes)
+    assert msg["Subject"] == "Quarterly Roadmap Update"
+    assert "In-Reply-To" not in msg
+    assert "References" not in msg
+    assert "Here is our roadmap for Q3." in msg.get_payload()
+
+
 # =============================================================================
 # State Machine & Approval Service Tests
 # =============================================================================
@@ -397,3 +413,94 @@ async def test_drafts_api_flow(auth_user):
             assert resp.json()["status"] == "sent"
     finally:
         app.dependency_overrides.clear()
+
+
+async def test_create_custom_draft_success(mock_repos):
+    mock_draft_repo, mock_email_repo, mock_user_repo, mock_auth_service = mock_repos
+    service = ApprovalService(mock_draft_repo, mock_email_repo, mock_user_repo, mock_auth_service)
+    user_id = uuid.uuid4()
+    mock_user = UserRow(
+        id=user_id,
+        email="alex@example.com",
+        name="Alex",
+        google_sub="sub_123",
+        avatar_url=None,
+        google_access_token="tok",
+        google_refresh_token="ref",
+        google_token_expires_at=datetime.now(UTC),
+        telegram_chat_id=123,
+        prefs={},
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    mock_user_repo.get_by_id = AsyncMock(return_value=mock_user)
+    mock_auth_service.get_user_groq_api_key = AsyncMock(return_value=None)
+    mock_created_email = EmailRow(
+        id=uuid.uuid4(),
+        user_id=user_id,
+        gmail_msg_id="outbound_123",
+        thread_id="th_123",
+        rfc_message_id=None,
+        sender="Alex <alex@example.com>",
+        sender_email="sam@example.com",
+        reply_to="sam@example.com",
+        subject="Project Status Update",
+        received_at=datetime.now(UTC),
+        snippet="Hi Sam",
+        body_clean="Tell him the project is on track",
+        has_attachments=False,
+        labels=["COMPOSED", "OUTBOUND"],
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    mock_email_repo.upsert_email = AsyncMock(return_value=mock_created_email)
+    created_draft = DraftRow(
+        id=uuid.uuid4(),
+        user_id=user_id,
+        email_id=mock_created_email.id,
+        status=DraftStatus.DRAFT_GENERATED,
+        current_version=1,
+        idempotency_key="idemp_1",
+        expires_at=datetime.now(UTC),
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    pending_draft = DraftRow(
+        id=created_draft.id,
+        user_id=user_id,
+        email_id=mock_created_email.id,
+        status=DraftStatus.PENDING_APPROVAL,
+        current_version=1,
+        idempotency_key="idemp_1",
+        expires_at=datetime.now(UTC),
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    mock_draft_repo.create_draft = AsyncMock(return_value=created_draft)
+    mock_draft_repo.transition_draft = AsyncMock(return_value=pending_draft)
+    mock_draft_repo.create_version = AsyncMock(return_value=MagicMock())
+
+    mock_groq_resp = MagicMock()
+    mock_choice = MagicMock()
+    mock_choice.message.content = (
+        '{"subject": "Project Status Update", "body": "Hi Sam,\\nUpdate.\\nBest,"}'
+    )
+    mock_groq_resp.choices = [mock_choice]
+
+    with patch.object(
+        service.groq_client.chat.completions,
+        "create",
+        AsyncMock(return_value=mock_groq_resp),
+    ):
+        draft, email_record = await service.create_custom_draft(
+            user_id=user_id,
+            recipient="sam@example.com",
+            user_instruction="Tell him the project is on track",
+        )
+
+        assert email_record.sender_email == "sam@example.com"
+        assert "COMPOSED" in email_record.labels
+        assert "OUTBOUND" in email_record.labels
+        assert draft.status == DraftStatus.PENDING_APPROVAL
+        assert mock_draft_repo.create_draft.called
+        assert mock_draft_repo.create_version.called

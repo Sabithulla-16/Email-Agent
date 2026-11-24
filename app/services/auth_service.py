@@ -13,7 +13,6 @@ import httpx
 import structlog
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token
-
 from groq import AsyncGroq
 
 from app.core.config import Settings, get_settings

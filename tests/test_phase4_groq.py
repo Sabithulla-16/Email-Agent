@@ -253,4 +253,3 @@ async def test_groq_model_cooldown_on_429() -> None:
         assert res2.category == "work"
         # Should only make 1 call because the rate-limited model was skipped during cooldown!
         assert call_count == 1
-

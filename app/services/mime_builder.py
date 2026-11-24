@@ -13,8 +13,9 @@ def build_mime_reply(
     in_reply_to: str | None = None,
     references: str | None = None,
     idempotency_key: str | None = None,
+    is_reply: bool = True,
 ) -> str:
-    """Build an RFC 2822 MIME message for replying to an existing thread.
+    """Build an RFC 2822 MIME message for replying to an existing thread or sending a new email.
 
     Returns standard base64url string suitable for Gmail API send raw.
     """
@@ -22,9 +23,12 @@ def build_mime_reply(
     msg["From"] = from_addr
     msg["To"] = to_addr
 
-    # Subject with Re: handling
-    if not re.match(r"(?i)^re:\s*", subject.strip()):
-        normalized_subject = f"Re: {subject.strip()}"
+    # Subject with Re: handling only for replies
+    if is_reply:
+        if not re.match(r"(?i)^re:\s*", subject.strip()):
+            normalized_subject = f"Re: {subject.strip()}"
+        else:
+            normalized_subject = subject.strip()
     else:
         normalized_subject = subject.strip()
     msg["Subject"] = normalized_subject

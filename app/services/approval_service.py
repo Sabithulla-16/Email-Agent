@@ -1,8 +1,10 @@
 """Draft Generation, Revision Loop, and Approval State Machine."""
 
+import json
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 from uuid import UUID
 
 import structlog
@@ -18,6 +20,8 @@ from app.models.db import (
     DraftRow,
     DraftStatus,
     DraftVersionRow,
+    EmailCreate,
+    EmailRow,
 )
 from app.services.auth_service import AuthService
 from app.services.gmail_client import GmailClient
@@ -154,10 +158,10 @@ class ApprovalService:
         user_key = api_key
         if not user_key and hasattr(self.auth_service, "get_user_groq_api_key"):
             try:
-                res_key = self.auth_service.get_user_groq_api_key(user_id)
+                res_key: Any = self.auth_service.get_user_groq_api_key(user_id)
                 if hasattr(res_key, "__await__"):
                     user_key = await res_key
-                else:
+                elif isinstance(res_key, str):
                     user_key = res_key
             except Exception:
                 user_key = None
@@ -208,7 +212,11 @@ class ApprovalService:
                 continue
 
         if not draft_text:
-            draft_text = f"Hi {email.sender},\n\nThank you for your email. I will follow up with you shortly.\n\n{sig}"
+            draft_text = (
+                f"Hi {email.sender},\n\n"
+                f"Thank you for your email. I will follow up with you shortly.\n\n"
+                f"{sig}"
+            )
 
         # Create draft record (DRAFT_GENERATED)
         idempotency_key = f"draft_{uuid.uuid4().hex[:16]}"
@@ -235,6 +243,146 @@ class ApprovalService:
 
         # Transition DRAFT_GENERATED -> PENDING_APPROVAL
         return await self.transition(draft, DraftStatus.PENDING_APPROVAL)
+
+    async def create_custom_draft(
+        self,
+        user_id: UUID | str,
+        recipient: str,
+        user_instruction: str,
+        subject: str | None = None,
+        api_key: str | None = None,
+    ) -> tuple[DraftRow, EmailRow]:
+        """Compose a new outbound email draft from user instructions using Groq LLM.
+
+        Rewrites rough notes into a polished email, connects it with the standard
+        versioning and approval pipeline, and returns (draft, email).
+        """
+        user = await self.user_repo.get_by_id(user_id)
+        if not user:
+            raise NotFoundError(f"User {user_id} not found")
+
+        # Resolve user Groq API key
+        user_key = api_key
+        if not user_key and hasattr(self.auth_service, "get_user_groq_api_key"):
+            try:
+                res_key: Any = self.auth_service.get_user_groq_api_key(user_id)
+                if hasattr(res_key, "__await__"):
+                    user_key = await res_key
+                elif isinstance(res_key, str):
+                    user_key = res_key
+            except Exception:
+                user_key = None
+
+        groq_client = (
+            AsyncGroq(api_key=user_key.strip(), max_retries=0)
+            if user_key and user_key.strip()
+            else self.groq_client
+        )
+
+        tone = user.prefs.get("tone", "friendly")
+        user_name = user.name or "User"
+        sig = user.prefs.get("signature") or f"Best regards,\n{user_name}"
+
+        sys_prompt = (
+            "You are an executive email writing assistant. "
+            "The user wants to compose an email to the specified recipient based on their notes.\n"
+            f"Tone: {tone}\n"
+            f"Sign-off Signature:\n{sig}\n\n"
+            "INSTRUCTIONS:\n"
+            "1. Write a clear, professional email matching the requested tone.\n"
+            "2. If a subject is given, refine it; otherwise create a concise subject line.\n"
+            "3. Output strictly valid JSON matching this schema:\n"
+            '{"subject": "Concise subject", "body": "Full body with greeting and signature"}'
+        )
+
+        user_content = (
+            f"Recipient: {recipient}\n"
+            f"Provided Subject: {subject or 'None'}\n"
+            f"User Instructions / Notes:\n{user_instruction}"
+        )
+
+        candidate_models = [
+            self.settings.GROQ_DRAFT_MODEL,
+            getattr(self.settings, "GROQ_FALLBACK_MODEL", "qwen/qwen3.8-27b"),
+            self.settings.GROQ_FAST_MODEL,
+        ]
+
+        parsed_subject = subject or "Quick update"
+        parsed_body = ""
+        model_used = candidate_models[0]
+
+        for m in candidate_models:
+            try:
+                resp = await groq_client.chat.completions.create(
+                    model=m,
+                    messages=[
+                        {"role": "system", "content": sys_prompt},
+                        {"role": "user", "content": user_content},
+                    ],
+                    response_format={"type": "json_object"},
+                    temperature=0.2,
+                )
+                raw = (resp.choices[0].message.content or "").strip()
+                data = json.loads(raw)
+                parsed_subject = str(data.get("subject", subject or "Quick update")).strip()
+                parsed_body = str(data.get("body", "")).strip()
+                model_used = m
+                if parsed_body:
+                    break
+            except Exception as exc:
+                logger.warning("compose_draft_llm_failed", model=m, error=str(exc))
+                continue
+
+        if not parsed_body:
+            parsed_body = f"Hi,\n\n{user_instruction}\n\n{sig}"
+
+        # 1. Create an outbound synthetic email record in DB
+        now_dt = datetime.now(UTC)
+        outbound_msg_id = f"outbound_{uuid.uuid4().hex[:12]}"
+        created_email = await self.email_repo.upsert_email(
+            EmailCreate(
+                user_id=str(user.id),
+                gmail_msg_id=outbound_msg_id,
+                thread_id=f"th_{outbound_msg_id}",
+                rfc_message_id=None,
+                sender=f"{user_name} <{user.email}>",
+                sender_email=recipient,
+                reply_to=recipient,
+                subject=parsed_subject,
+                received_at=now_dt.isoformat(),
+                snippet=parsed_body[:200],
+                body_clean=user_instruction,
+                has_attachments=False,
+                labels=["COMPOSED", "OUTBOUND"],
+            )
+        )
+
+        # 2. Create draft record in drafts table
+        idempotency_key = f"draft_{uuid.uuid4().hex[:16]}"
+        expires_at = now_dt + timedelta(hours=self.settings.DRAFT_EXPIRY_HOURS)
+
+        draft = await self.draft_repo.create_draft(
+            DraftCreate(
+                user_id=str(user.id),
+                email_id=str(created_email.id),
+                status=DraftStatus.DRAFT_GENERATED.value,
+                idempotency_key=idempotency_key,
+                expires_at=expires_at.isoformat(),
+            )
+        )
+
+        # 3. Create version 1 record
+        await self.draft_repo.create_version(
+            draft_id=draft.id,
+            body=parsed_body,
+            user_instruction=user_instruction,
+            source="user_compose",
+            model=model_used,
+        )
+
+        # 4. Transition to PENDING_APPROVAL
+        ready_draft = await self.transition(draft, DraftStatus.PENDING_APPROVAL)
+        return ready_draft, created_email
 
     # -------------------------------------------------------------------------
     # Approval & Sending Execution
@@ -278,23 +426,28 @@ class ApprovalService:
             raise NotFoundError("Draft version body not found")
         latest_version = versions[-1]
 
-        # 3. Build RFC 2822 MIME reply message
+        # 3. Build RFC 2822 MIME reply/message
         reply_to_target = email.reply_to or email.sender_email
+        is_composed = "COMPOSED" in (email.labels or [])
+        is_reply = not is_composed
+        thread_id = None if is_composed else email.thread_id
+
         raw_b64 = build_mime_reply(
             from_addr=f"{user.name or ''} <{user.email}>".strip(),
             to_addr=reply_to_target,
             subject=email.subject,
             body=latest_version.body,
-            in_reply_to=email.rfc_message_id,
-            references=email.rfc_message_id,
+            in_reply_to=None if is_composed else email.rfc_message_id,
+            references=None if is_composed else email.rfc_message_id,
             idempotency_key=draft.idempotency_key,
+            is_reply=is_reply,
         )
 
         # 4. Send via Gmail API
         try:
             token = await self.auth_service.get_valid_access_token(user_id)
             client = GmailClient(access_token=token)
-            send_resp = await client.send_raw_message(raw_b64=raw_b64, thread_id=email.thread_id)
+            send_resp = await client.send_raw_message(raw_b64=raw_b64, thread_id=thread_id)
             sent_msg_id = send_resp.get("id")
 
             # 5. Transition SENDING -> SENT
@@ -350,10 +503,10 @@ class ApprovalService:
         user_key = api_key
         if not user_key and hasattr(self.auth_service, "get_user_groq_api_key"):
             try:
-                res_key = self.auth_service.get_user_groq_api_key(user_id)
+                res_key: Any = self.auth_service.get_user_groq_api_key(user_id)
                 if hasattr(res_key, "__await__"):
                     user_key = await res_key
-                else:
+                elif isinstance(res_key, str):
                     user_key = res_key
             except Exception:
                 user_key = None

@@ -39,7 +39,11 @@ class InboxQAService:
     ) -> dict[str, Any]:
         """Answer natural language question based on the user's digested email catalog."""
         user_key = api_key
-        if not user_key and self.auth_service and hasattr(self.auth_service, "get_user_groq_api_key"):
+        if (
+            not user_key
+            and self.auth_service
+            and hasattr(self.auth_service, "get_user_groq_api_key")
+        ):
             try:
                 res_k = self.auth_service.get_user_groq_api_key(user_id)
                 if hasattr(res_k, "__await__"):

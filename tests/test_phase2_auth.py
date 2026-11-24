@@ -363,4 +363,3 @@ async def test_me_groq_key_endpoints(client: AsyncClient) -> None:
         )
         assert res_del.status_code == 200
         assert res_del.json()["status"] == "removed"
-

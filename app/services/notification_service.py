@@ -244,14 +244,36 @@ class NotificationService:
         badges_text = ("\n" + "\n".join(extra_badges) + "\n") if extra_badges else ""
 
         # Build message body
-        summary_text = analysis.summary if analysis else email.snippet or ""
+        is_composed = "COMPOSED" in (email.labels or [])
+        header_title = (
+            "✍️ <b>Composed Draft Ready for Approval</b>"
+            if is_composed
+            else "📬 <b>New Draft Ready for Approval</b>"
+        )
+        address_line = (
+            f"<b>To:</b> {escape_html(email.sender_email)}\n"
+            if is_composed
+            else f"<b>From:</b> {escape_html(email.sender)}\n"
+        )
+        version_label = (
+            f"<b>Proposed Email (v{version.version}):</b>\n"
+            if is_composed
+            else f"<b>Proposed Reply (v{version.version}):</b>\n"
+        )
+        summary_text = analysis.summary if analysis else (email.snippet or "")
+        summary_line = (
+            f"<b>Notes:</b> {escape_html(email.body_clean[:150])}\n"
+            if is_composed
+            else f"<b>Summary:</b> {escape_html(summary_text)}\n"
+        )
+
         msg_text = (
-            f"📬 <b>New Draft Ready for Approval</b>\n\n"
-            f"<b>From:</b> {escape_html(email.sender)}\n"
+            f"{header_title}\n\n"
+            f"{address_line}"
             f"<b>Subject:</b> {escape_html(email.subject)}\n"
-            f"<b>Summary:</b> {escape_html(summary_text)}\n"
+            f"{summary_line}"
             f"{badges_text}\n"
-            f"<b>Proposed Reply (v{version.version}):</b>\n"
+            f"{version_label}"
             f"<blockquote>{escape_html(version.body)}</blockquote>"
         )
 

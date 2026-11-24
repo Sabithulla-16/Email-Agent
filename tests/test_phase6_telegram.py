@@ -14,6 +14,7 @@ from app.models.db import (
     DraftRow,
     DraftStatus,
     DraftVersionRow,
+    DraftVersionSource,
     EmailAnalysisRow,
     EmailCategory,
     EmailPriority,
@@ -512,3 +513,217 @@ async def test_telegram_setkey_and_mykey_flow(telegram_service):
     await telegram_service.process_webhook_update(mykey_update)
     mock_auth.get_user_groq_key_status.assert_awaited_once_with(user_id)
 
+
+async def test_telegram_create_draft_full_command(telegram_service):
+    chat_id = 888777
+    user_id = uuid.uuid4()
+    now = datetime.now(UTC)
+    active_link = TelegramLinkRow(
+        id=uuid.uuid4(),
+        user_id=user_id,
+        chat_id=chat_id,
+        is_active=True,
+        linked_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    telegram_service.telegram_repo.get_link_by_chat_id = AsyncMock(return_value=active_link)
+    telegram_service.telegram_client.send_message = AsyncMock(return_value={"message_id": 999})
+    telegram_service.telegram_client.delete_message = AsyncMock()
+
+    mock_draft = DraftRow(
+        id=uuid.uuid4(),
+        user_id=user_id,
+        email_id=uuid.uuid4(),
+        status=DraftStatus.PENDING_APPROVAL,
+        current_version=1,
+        idempotency_key="idemp_create",
+        expires_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    mock_email = EmailRow(
+        id=mock_draft.email_id,
+        user_id=user_id,
+        gmail_msg_id="out_123",
+        thread_id="th_123",
+        rfc_message_id=None,
+        sender="User <user@example.com>",
+        sender_email="recipient@example.com",
+        reply_to="recipient@example.com",
+        subject="Project Update",
+        received_at=now,
+        snippet="Draft body",
+        body_clean="Notes",
+        has_attachments=False,
+        labels=["COMPOSED", "OUTBOUND"],
+        created_at=now,
+        updated_at=now,
+    )
+    telegram_service.approval_service.create_custom_draft = AsyncMock(
+        return_value=(mock_draft, mock_email)
+    )
+    telegram_service.draft_repo.get_versions = AsyncMock(
+        return_value=[
+            DraftVersionRow(
+                id=uuid.uuid4(),
+                draft_id=mock_draft.id,
+                version=1,
+                body="Draft body",
+                source=DraftVersionSource.LLM,
+                model="test_model",
+                created_at=now,
+            )
+        ]
+    )
+    telegram_service.notification_service.notify_new_draft = AsyncMock()
+
+    update = {
+        "update_id": 3001,
+        "message": {
+            "message_id": 101,
+            "chat": {"id": chat_id},
+            "text": "/create recipient@example.com Please send the status report",
+        },
+    }
+    await telegram_service.process_webhook_update(update)
+
+    telegram_service.approval_service.create_custom_draft.assert_awaited_once_with(
+        user_id=user_id,
+        recipient="recipient@example.com",
+        user_instruction="Please send the status report",
+    )
+    telegram_service.notification_service.notify_new_draft.assert_awaited_once()
+
+
+async def test_telegram_create_draft_missing_recipient_interactive_flow(telegram_service):
+    chat_id = 999888
+    user_id = uuid.uuid4()
+    now = datetime.now(UTC)
+    active_link = TelegramLinkRow(
+        id=uuid.uuid4(),
+        user_id=user_id,
+        chat_id=chat_id,
+        is_active=True,
+        linked_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    telegram_service.telegram_repo.get_link_by_chat_id = AsyncMock(return_value=active_link)
+    telegram_service.telegram_client.send_message = AsyncMock(return_value={"message_id": 999})
+    telegram_service.telegram_client.delete_message = AsyncMock()
+    telegram_service.telegram_repo.get_and_clear_pending_interaction = AsyncMock(return_value=None)
+
+    # 1. User sends /create without recipient
+    update1 = {
+        "update_id": 3002,
+        "message": {
+            "message_id": 102,
+            "chat": {"id": chat_id},
+            "text": "/create Please send the status report by 5pm",
+        },
+    }
+    await telegram_service.process_webhook_update(update1)
+
+    # Verify bot asked for recipient
+    first_call_text = telegram_service.telegram_client.send_message.call_args_list[-1].kwargs[
+        "text"
+    ]
+    assert "Recipient Needed" in first_call_text
+
+    mock_draft = DraftRow(
+        id=uuid.uuid4(),
+        user_id=user_id,
+        email_id=uuid.uuid4(),
+        status=DraftStatus.PENDING_APPROVAL,
+        current_version=1,
+        idempotency_key="idemp_interactive",
+        expires_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    mock_email = EmailRow(
+        id=mock_draft.email_id,
+        user_id=user_id,
+        gmail_msg_id="out_456",
+        thread_id="th_456",
+        rfc_message_id=None,
+        sender="User <user@example.com>",
+        sender_email="boss@company.com",
+        reply_to="boss@company.com",
+        subject="Report Status",
+        received_at=now,
+        snippet="Draft",
+        body_clean="Notes",
+        has_attachments=False,
+        labels=["COMPOSED", "OUTBOUND"],
+        created_at=now,
+        updated_at=now,
+    )
+    telegram_service.approval_service.create_custom_draft = AsyncMock(
+        return_value=(mock_draft, mock_email)
+    )
+    telegram_service.draft_repo.get_versions = AsyncMock(return_value=[MagicMock()])
+    telegram_service.notification_service.notify_new_draft = AsyncMock()
+
+    # 2. User replies with email address
+    update2 = {
+        "update_id": 3003,
+        "message": {
+            "message_id": 103,
+            "chat": {"id": chat_id},
+            "text": "Send it to boss@company.com please",
+        },
+    }
+    await telegram_service.process_webhook_update(update2)
+
+    telegram_service.approval_service.create_custom_draft.assert_awaited_once_with(
+        user_id=user_id,
+        recipient="boss@company.com",
+        user_instruction="Please send the status report by 5pm",
+    )
+
+
+async def test_telegram_create_draft_cancel_command(telegram_service):
+    chat_id = 111222
+    user_id = uuid.uuid4()
+    now = datetime.now(UTC)
+    active_link = TelegramLinkRow(
+        id=uuid.uuid4(),
+        user_id=user_id,
+        chat_id=chat_id,
+        is_active=True,
+        linked_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    telegram_service.telegram_repo.get_link_by_chat_id = AsyncMock(return_value=active_link)
+    telegram_service.telegram_client.send_message = AsyncMock(return_value={"message_id": 999})
+    telegram_service.telegram_client.delete_message = AsyncMock()
+
+    # Start creation
+    await telegram_service.process_webhook_update(
+        {
+            "update_id": 3004,
+            "message": {
+                "message_id": 104,
+                "chat": {"id": chat_id},
+                "text": "/create Some notes here",
+            },
+        }
+    )
+
+    # Cancel
+    await telegram_service.process_webhook_update(
+        {
+            "update_id": 3005,
+            "message": {
+                "message_id": 105,
+                "chat": {"id": chat_id},
+                "text": "/cancel",
+            },
+        }
+    )
+
+    cancel_msg = telegram_service.telegram_client.send_message.call_args_list[-1].kwargs["text"]
+    assert "Draft creation cancelled" in cancel_msg

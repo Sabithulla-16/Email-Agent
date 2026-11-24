@@ -1,8 +1,11 @@
 """Telegram bot service orchestrating account linking, commands, callbacks, and voice revisions."""
 
+import contextlib
 import hashlib
 import hmac
+import re
 import secrets
+import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -18,6 +21,7 @@ from app.db.repos.user_repo import UserRepo
 from app.models.db import DraftStatus
 from app.queue.redis import get_redis
 from app.services.approval_service import ApprovalService
+from app.services.auth_service import AuthService
 from app.services.digest_service import DigestService
 from app.services.followup_service import FollowupService
 from app.services.groq_service import GroqService
@@ -29,6 +33,13 @@ from app.services.telegram_client import TelegramClient, escape_html
 logger = structlog.get_logger("app.services.telegram")
 
 _START_MESSAGE_IDS: dict[int, int] = {}
+_PENDING_COMPOSE_STATES: dict[int, dict[str, Any]] = {}
+EMAIL_REGEX = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+")
+
+
+def extract_email_address(text: str) -> str | None:
+    match = EMAIL_REGEX.search(text)
+    return match.group(0) if match else None
 
 
 async def save_start_message_id(chat_id: int, message_id: int) -> None:
@@ -248,16 +259,48 @@ class TelegramService:
         if text.startswith("/"):
             # Automatically delete messages containing sensitive API keys for privacy
             if text.startswith("/setkey") and message.get("message_id"):
-                try:
+                with contextlib.suppress(Exception):
                     await self.telegram_client.delete_message(
                         chat_id=chat_id, message_id=int(message["message_id"])
                     )
-                except Exception:
-                    pass
             await self._handle_command(chat_id, text)
             return
 
-        # 3. Pending Interaction Processing (e.g. revision text reply)
+        # 3. In-flight /create compose state processing (e.g. user answering recipient)
+        compose_state = _PENDING_COMPOSE_STATES.get(chat_id)
+        if compose_state and (time.time() - compose_state.get("created_at", 0) < 600):
+            if "recipient" not in compose_state:
+                found_email = extract_email_address(text)
+                if found_email:
+                    _PENDING_COMPOSE_STATES.pop(chat_id, None)
+                    await self._execute_custom_draft_creation(
+                        chat_id=chat_id,
+                        user_id=compose_state["user_id"],
+                        recipient=found_email,
+                        instruction=compose_state["instruction"],
+                    )
+                    return
+                else:
+                    await self.telegram_client.send_message(
+                        chat_id=chat_id,
+                        text=(
+                            "⚠️ <i>Please enter a valid recipient email address "
+                            "(e.g. <code>colleague@example.com</code>). "
+                            "Or send /cancel to abort.</i>"
+                        ),
+                    )
+                    return
+            elif "instruction" not in compose_state:
+                _PENDING_COMPOSE_STATES.pop(chat_id, None)
+                await self._execute_custom_draft_creation(
+                    chat_id=chat_id,
+                    user_id=compose_state["user_id"],
+                    recipient=compose_state["recipient"],
+                    instruction=text,
+                )
+                return
+
+        # 4. Pending Interaction Processing (e.g. revision text reply)
         pending = await self.telegram_repo.get_and_clear_pending_interaction(chat_id)
         if pending and pending.type == "revision_instruction":
             await self._apply_text_revision(
@@ -350,10 +393,12 @@ class TelegramService:
                             text=(
                                 "🎉 <b>Account successfully linked!</b>\n\n"
                                 "🔑 <b>Final Step: Set your Groq API Key</b>\n"
-                                "To enable AI email analysis and reply drafts on your own quota, enter your Groq API key:\n\n"
+                                "To enable AI email analysis and reply drafts on your own quota, "
+                                "enter your Groq API key:\n\n"
                                 "<code>/setkey gsk_your_key_here</code>\n\n"
                                 "<i>(Get a free key at https://console.groq.com/keys)</i>\n"
-                                "<i>Your key is encrypted with AES-256 and your message is deleted immediately for privacy.</i>"
+                                "<i>Your key is encrypted with AES-256 and your message is "
+                                "deleted immediately for privacy.</i>"
                             ),
                         )
                     else:
@@ -441,7 +486,8 @@ class TelegramService:
                         "ℹ️ <b>How to set your Groq API key:</b>\n\n"
                         "Send: <code>/setkey gsk_your_groq_key_here</code>\n\n"
                         "<i>(You can get a free key in 30 seconds at https://console.groq.com/keys)</i>\n"
-                        "<i>Your key is encrypted with AES-256 and your message is automatically deleted for privacy.</i>"
+                        "<i>Your key is encrypted with AES-256 and your message is "
+                        "automatically deleted for privacy.</i>"
                     ),
                 )
                 return
@@ -470,7 +516,8 @@ class TelegramService:
                         "✅ <b>Groq API Key Configured Successfully!</b>\n\n"
                         f"• Key: <code>{masked}</code>\n"
                         f"• Encryption: <b>AES-256-GCM</b>\n\n"
-                        "All email summaries, triage analysis, and reply drafts will now run on your dedicated Groq quota.\n"
+                        "All email summaries, triage analysis, and reply drafts will now run "
+                        "on your dedicated Groq quota.\n"
                         "Use /mykey to view status or /removekey to delete it."
                     ),
                 )
@@ -530,6 +577,86 @@ class TelegramService:
                 chat_id=chat_id,
                 text="🔌 <b>Telegram disconnected.</b> Notifications have been stopped.",
             )
+
+        elif cmd == "/create":
+            rest = command_text[len(cmd) :].strip()
+            if not rest:
+                await self.telegram_client.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        "✍️ <b>Compose a New Email Draft</b>\n\n"
+                        "Give me the recipient and your rough notes, and I will compose a "
+                        "polished draft for your review.\n\n"
+                        "<b>Format:</b>\n"
+                        "<code>/create &lt;recipient_email&gt; &lt;your notes&gt;</code>\n\n"
+                        "<b>Example:</b>\n"
+                        "<code>/create sarah@company.com Review design draft by 3pm</code>\n\n"
+                        "<i>(You can also just send: <code>/create Tell her I'll be late</code> "
+                        "and I will ask you for the email address!)</i>"
+                    ),
+                )
+                return
+
+            recipient = extract_email_address(rest)
+            if not recipient:
+                # User provided instructions but missed the recipient
+                _PENDING_COMPOSE_STATES[chat_id] = {
+                    "instruction": rest,
+                    "user_id": user_id,
+                    "created_at": time.time(),
+                }
+                await self.telegram_client.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        "📧 <b>Recipient Needed</b>\n\n"
+                        "Who should I send this email to?\n\n"
+                        "Please reply with the recipient's email address "
+                        "(e.g. <code>colleague@example.com</code>):"
+                    ),
+                )
+                return
+
+            # Strip recipient from instructions
+            cleaned_instruction = EMAIL_REGEX.sub("", rest).strip()
+            cleaned_instruction = re.sub(
+                r"(?i)^(to|recipient|sender)\s*:\s*", "", cleaned_instruction
+            ).strip()
+
+            if not cleaned_instruction:
+                # User gave only recipient
+                _PENDING_COMPOSE_STATES[chat_id] = {
+                    "recipient": recipient,
+                    "user_id": user_id,
+                    "created_at": time.time(),
+                }
+                await self.telegram_client.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        f"✍️ <b>What would you like to say to "
+                        f"<code>{escape_html(recipient)}</code>?</b>\n\n"
+                        "Reply here with your rough notes or instructions, "
+                        "and I will draft the email for you."
+                    ),
+                )
+                return
+
+            await self._execute_custom_draft_creation(
+                chat_id=chat_id,
+                user_id=user_id,
+                recipient=recipient,
+                instruction=cleaned_instruction,
+            )
+
+        elif cmd == "/cancel":
+            if chat_id in _PENDING_COMPOSE_STATES:
+                _PENDING_COMPOSE_STATES.pop(chat_id, None)
+                await self.telegram_client.send_message(
+                    chat_id=chat_id, text="🚫 Draft creation cancelled."
+                )
+            else:
+                await self.telegram_client.send_message(
+                    chat_id=chat_id, text="ℹ️ No active draft creation in progress."
+                )
 
         elif cmd == "/pending":
             drafts = await self.draft_repo.list_by_user(
@@ -720,6 +847,7 @@ class TelegramService:
                 text=(
                     "🤖 <b>Email Agent Bot Commands:</b>\n\n"
                     "<b>Email & Approvals:</b>\n"
+                    "• /create &lt;to&gt; &lt;notes&gt; - Compose a fresh email draft with AI\n"
                     "• /pending - Show drafts waiting for approval\n"
                     "• /urgent - Show high priority emails\n"
                     "• /sync - Manually trigger Gmail sync\n"
@@ -733,6 +861,7 @@ class TelegramService:
                     "• /setkey &lt;key&gt; - Set personal Groq API key\n"
                     "• /mykey - Check current Groq API key status\n"
                     "• /removekey - Remove personal Groq key\n"
+                    "• /cancel - Cancel active draft composition\n"
                     "• /snooze &lt;hours&gt; - Pause notifications\n"
                     "• /mute - Mute notifications for 24h\n"
                     "• /settings - View notification settings\n"
@@ -816,6 +945,44 @@ class TelegramService:
             await self.telegram_client.send_message(
                 chat_id=chat_id,
                 text=f"⚠️ Revision failed: {escape_html(str(exc))}",
+            )
+
+    async def _execute_custom_draft_creation(
+        self,
+        chat_id: int,
+        user_id: UUID | str,
+        recipient: str,
+        instruction: str,
+    ) -> None:
+        """Compose a brand new outbound email draft and present it via the draft pipeline."""
+        status_msg = await self.telegram_client.send_message(
+            chat_id=chat_id,
+            text=f"✍️ <i>Composing email draft for <code>{escape_html(recipient)}</code>...</i>",
+        )
+        msg_id = status_msg.get("message_id") if isinstance(status_msg, dict) else None
+        try:
+            draft, email = await self.approval_service.create_custom_draft(
+                user_id=user_id,
+                recipient=recipient,
+                user_instruction=instruction,
+            )
+            versions = await self.draft_repo.get_versions(draft.id)
+            if msg_id:
+                await self.telegram_client.delete_message(chat_id=chat_id, message_id=int(msg_id))
+
+            if versions:
+                await self.notification_service.notify_new_draft(
+                    draft=draft,
+                    version=versions[-1],
+                    email=email,
+                )
+        except Exception as exc:
+            if msg_id:
+                await self.telegram_client.delete_message(chat_id=chat_id, message_id=int(msg_id))
+            logger.error("execute_custom_draft_creation_failed", error=str(exc))
+            await self.telegram_client.send_message(
+                chat_id=chat_id,
+                text=f"⚠️ Failed to compose draft: {escape_html(str(exc))}",
             )
 
     async def _render_updated_draft_message(
