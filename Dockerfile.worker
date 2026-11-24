@@ -1,0 +1,32 @@
+# Multi-stage Dockerfile for ARQ Background Worker using Python 3.12 and uv
+FROM ghcr.io/astral-sh/uv:0.6-python3.12-bookworm-slim AS builder
+
+WORKDIR /build
+
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy
+
+COPY pyproject.toml README.md ./
+RUN uv venv /opt/venv --python 3.12 && \
+    uv pip install --no-cache -r pyproject.toml
+
+COPY app ./app
+RUN uv pip install --no-cache -e .
+
+FROM python:3.12-slim-bookworm AS runner
+
+WORKDIR /app
+
+ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+RUN groupadd -g 1001 appgroup && \
+    useradd -u 1001 -g appgroup -s /bin/bash -m appuser
+
+COPY --from=builder /opt/venv /opt/venv
+COPY --chown=appuser:appgroup app ./app
+
+USER appuser
+
+CMD ["arq", "app.queue.worker.WorkerSettings"]
