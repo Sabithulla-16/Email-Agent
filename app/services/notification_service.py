@@ -21,6 +21,8 @@ from app.models.db import (
     NotificationPrefsRow,
     UserRow,
 )
+from app.services.extra_extractors import ExtraExtractorsService
+from app.services.smart_actions import SmartActionsService
 from app.services.telegram_client import TelegramClient, escape_html
 
 logger = structlog.get_logger("app.services.notification")
@@ -199,6 +201,19 @@ class NotificationService:
             ],
         ]
 
+        # Smart Actions: check for meeting request
+        smart_svc = SmartActionsService()
+        meeting_info = smart_svc.extract_meeting_details(email)
+        if meeting_info and meeting_info.get("calendar_url"):
+            inline_rows.append(
+                [
+                    {
+                        "text": "📅 Add to Google Calendar",
+                        "url": meeting_info["calendar_url"],
+                    }
+                ]
+            )
+
         frontend_url = self.settings.FRONTEND_BASE_URL.rstrip("/")
         if frontend_url and not ("localhost" in frontend_url or "127.0.0.1" in frontend_url):
             inline_rows.append(
@@ -212,13 +227,30 @@ class NotificationService:
 
         keyboard = {"inline_keyboard": inline_rows}
 
+        # Extra Extractors: check for bills or phishing
+        extra_svc = ExtraExtractorsService()
+        extra_badges = []
+        bill = extra_svc.extract_bill(email)
+        if bill:
+            extra_badges.append(
+                f"🧾 <b>Bill:</b> {bill['currency']} {bill['amount']:.2f} (Due: {bill['due_date']})"
+            )
+        phishing = extra_svc.scan_phishing_indicators(email)
+        if phishing:
+            extra_badges.append(
+                "⚠️ <b>Security Alert:</b> Suspicious links / phishing indicators detected!"
+            )
+
+        badges_text = ("\n" + "\n".join(extra_badges) + "\n") if extra_badges else ""
+
         # Build message body
         summary_text = analysis.summary if analysis else email.snippet or ""
         msg_text = (
             f"📬 <b>New Draft Ready for Approval</b>\n\n"
             f"<b>From:</b> {escape_html(email.sender)}\n"
             f"<b>Subject:</b> {escape_html(email.subject)}\n"
-            f"<b>Summary:</b> {escape_html(summary_text)}\n\n"
+            f"<b>Summary:</b> {escape_html(summary_text)}\n"
+            f"{badges_text}\n"
             f"<b>Proposed Reply (v{version.version}):</b>\n"
             f"<blockquote>{escape_html(version.body)}</blockquote>"
         )

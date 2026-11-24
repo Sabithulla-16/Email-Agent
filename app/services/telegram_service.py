@@ -18,8 +18,12 @@ from app.db.repos.user_repo import UserRepo
 from app.models.db import DraftStatus
 from app.queue.redis import get_redis
 from app.services.approval_service import ApprovalService
+from app.services.digest_service import DigestService
+from app.services.followup_service import FollowupService
 from app.services.groq_service import GroqService
+from app.services.inbox_qa import InboxQAService
 from app.services.notification_service import NotificationService
+from app.services.scheduler_runner import run_direct_sync_cycle
 from app.services.telegram_client import TelegramClient, escape_html
 
 logger = structlog.get_logger("app.services.telegram")
@@ -228,11 +232,51 @@ class TelegramService:
             )
             return
 
+        # 4. Natural Language Inbox Q&A for linked users
+        link = await self.telegram_repo.get_link_by_chat_id(chat_id)
+        if link and len(text) >= 3:
+            await self._handle_inbox_qa(chat_id, link.user_id, text)
+            return
+
         # Fallback greeting
         await self.telegram_client.send_message(
             chat_id=chat_id,
-            text="Type /help to see available commands or /pending for pending email drafts.",
+            text=(
+                "Type /help to see all commands, /pending for drafts, "
+                "or simply ask me any question about your emails!"
+            ),
         )
+
+    async def _handle_inbox_qa(self, chat_id: int, user_id: UUID | str, query: str) -> None:
+        """Answer natural language question about user's inbox using Groq LLM."""
+        await self.telegram_client.send_message(
+            chat_id=chat_id,
+            text="🔍 <i>Searching your emails...</i>",
+        )
+        try:
+            qa_svc = InboxQAService(email_repo=self.email_repo, settings=self.settings)
+            result = await qa_svc.answer_question(user_id=user_id, query=query)
+            answer = result.get("answer", "")
+            citations = result.get("citations", [])
+
+            resp_text = f"💡 <b>Answer:</b>\n\n{escape_html(answer)}"
+            if citations:
+                resp_text += "\n\n<b>Sources:</b>"
+                for c in citations[:3]:
+                    subj = escape_html(c.get("subject", "Email"))
+                    sender = escape_html(c.get("sender", ""))
+                    resp_text += f"\n• <b>{subj}</b> (from {sender})"
+
+            await self.telegram_client.send_message(
+                chat_id=chat_id,
+                text=resp_text,
+            )
+        except Exception as exc:
+            logger.error("telegram_qa_failed", query=query, error=str(exc))
+            await self.telegram_client.send_message(
+                chat_id=chat_id,
+                text=f"⚠️ <b>Could not answer query:</b> {escape_html(str(exc))}",
+            )
 
     # -------------------------------------------------------------------------
     # Command Router
@@ -384,18 +428,113 @@ class TelegramService:
                 ),
             )
 
+        elif cmd == "/ask":
+            query = " ".join(parts[1:]).strip()
+            if not query:
+                await self.telegram_client.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        "ℹ️ <i>Please provide a question. Example:</i> "
+                        "<code>/ask when is my meeting with Alex?</code>"
+                    ),
+                )
+            else:
+                await self._handle_inbox_qa(chat_id, user_id, query)
+
+        elif cmd == "/sync":
+            await self.telegram_client.send_message(
+                chat_id=chat_id,
+                text="🔄 <i>Synchronizing your inbox from Gmail...</i>",
+            )
+            try:
+                cycle_res = await run_direct_sync_cycle()
+                claimed = cycle_res.get("claimed_users", 0)
+                await self.telegram_client.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        f"✅ <b>Inbox Sync Complete!</b>\n"
+                        f"Processed active users ({claimed}) and drafted replies."
+                    ),
+                )
+            except Exception as exc:
+                logger.error("telegram_sync_command_failed", error=str(exc))
+                await self.telegram_client.send_message(
+                    chat_id=chat_id,
+                    text=f"⚠️ Sync failed: {escape_html(str(exc))}",
+                )
+
+        elif cmd == "/digest":
+            await self.telegram_client.send_message(
+                chat_id=chat_id,
+                text="📊 <i>Compiling your daily email digest...</i>",
+            )
+            try:
+                digest_svc = DigestService(
+                    user_repo=self.user_repo,
+                    email_repo=self.email_repo,
+                    draft_repo=self.draft_repo,
+                    telegram_repo=self.telegram_repo,
+                    settings=self.settings,
+                )
+                res = await digest_svc.generate_and_dispatch_digest(user_id)
+                if res.get("status") == "skipped":
+                    await self.telegram_client.send_message(
+                        chat_id=chat_id,
+                        text=f"ℹ️ Digest skipped: {res.get('reason', 'no recent activity')}",
+                    )
+            except Exception as exc:
+                logger.error("telegram_digest_command_failed", error=str(exc))
+                await self.telegram_client.send_message(
+                    chat_id=chat_id,
+                    text=f"⚠️ Digest failed: {escape_html(str(exc))}",
+                )
+
+        elif cmd in ("/followups", "/commitments"):
+            try:
+                followup_svc = FollowupService()
+                commitments = await followup_svc.list_open_commitments(user_id)
+                if not commitments:
+                    await self.telegram_client.send_message(
+                        chat_id=chat_id,
+                        text="✨ No open promises or commitments detected in recent sent emails!",
+                    )
+                else:
+                    lines = []
+                    for c in commitments[:5]:
+                        due = c.get("due_date", "Pending")
+                        promise = c.get("promise", "")
+                        lines.append(f"• <b>{escape_html(promise)}</b> (Due: {due})")
+                    await self.telegram_client.send_message(
+                        chat_id=chat_id,
+                        text="📋 <b>Tracked Commitments & Promises:</b>\n\n" + "\n".join(lines),
+                    )
+            except Exception as exc:
+                logger.error("telegram_followups_command_failed", error=str(exc))
+                await self.telegram_client.send_message(
+                    chat_id=chat_id,
+                    text=f"⚠️ Could not list commitments: {escape_html(str(exc))}",
+                )
+
         elif cmd == "/help":
             await self.telegram_client.send_message(
                 chat_id=chat_id,
                 text=(
                     "🤖 <b>Email Agent Bot Commands:</b>\n\n"
-                    "/pending - Show drafts waiting for approval\n"
-                    "/urgent - Show high priority emails\n"
-                    "/snooze &lt;hours&gt; - Pause notifications\n"
-                    "/mute - Mute notifications for 24h\n"
-                    "/settings - View notification settings\n"
-                    "/disconnect - Unlink this Telegram chat\n"
-                    "/help - Show this guide"
+                    "<b>Email & Approvals:</b>\n"
+                    "• /pending - Show drafts waiting for approval\n"
+                    "• /urgent - Show high priority emails\n"
+                    "• /sync - Manually trigger Gmail sync\n"
+                    "• /digest - Compile and send daily summary now\n\n"
+                    "<b>Productivity & AI:</b>\n"
+                    "• /ask &lt;query&gt; - Ask questions about your emails\n"
+                    "• /followups - View tracked promises & commitments\n"
+                    "• <i>Tip: Send any question in chat to search your emails!</i>\n"
+                    "• <i>Tip: Send a voice note to revise any draft!</i>\n\n"
+                    "<b>Settings:</b>\n"
+                    "• /snooze &lt;hours&gt; - Pause notifications\n"
+                    "• /mute - Mute notifications for 24h\n"
+                    "• /settings - View notification settings\n"
+                    "• /disconnect - Unlink this Telegram chat"
                 ),
             )
 
