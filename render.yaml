@@ -1,0 +1,105 @@
+services:
+  # ---------------------------------------------------------------------------
+  # 1. Web Service (FastAPI REST API & Telegram Webhook)
+  # ---------------------------------------------------------------------------
+  - type: web
+    name: email-agent-api
+    runtime: python
+    region: oregon
+    plan: starter
+    buildCommand: pip install uv && uv sync --frozen --no-dev
+    startCommand: uv run uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
+      - key: UV_PYTHON_DOWNLOADS
+        value: never
+      - key: ENVIRONMENT
+        value: production
+      - key: TELEGRAM_MODE
+        value: webhook
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: email-agent-redis
+          property: connectionString
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: APP_SECRET_KEY
+        sync: false
+      - key: TOKEN_ENCRYPTION_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_REDIRECT_URI
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_WEBHOOK_SECRET
+        sync: false
+      - key: TELEGRAM_BOT_USERNAME
+        sync: false
+      - key: SENTRY_DSN
+        sync: false
+
+  # ---------------------------------------------------------------------------
+  # 2. Background Worker (ARQ Scheduler, Sync, Groq LLM Analysis & Digests)
+  # ---------------------------------------------------------------------------
+  - type: worker
+    name: email-agent-worker
+    runtime: python
+    region: oregon
+    plan: starter
+    buildCommand: pip install uv && uv sync --frozen --no-dev
+    startCommand: uv run arq app.queue.worker.WorkerSettings
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
+      - key: UV_PYTHON_DOWNLOADS
+        value: never
+      - key: ENVIRONMENT
+        value: production
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: email-agent-redis
+          property: connectionString
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: APP_SECRET_KEY
+        sync: false
+      - key: TOKEN_ENCRYPTION_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_REDIRECT_URI
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+
+  # ---------------------------------------------------------------------------
+  # 3. Key Value (Managed Redis for Caching, Rate Limiting & ARQ Queue)
+  # ---------------------------------------------------------------------------
+  - type: keyvalue
+    name: email-agent-redis
+    region: oregon
+    plan: starter
+    maxmemoryPolicy: noeviction
+    ipAllowList: []

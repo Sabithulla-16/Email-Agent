@@ -7,7 +7,7 @@ import structlog
 from arq.connections import RedisSettings
 from arq.cron import cron
 
-from app.core.config import get_settings
+from app.core.config import get_settings, validate_startup_config
 from app.db.client import close_supabase, get_supabase, init_supabase
 from app.db.repos.draft_repo import DraftRepo
 from app.db.repos.email_repo import EmailRepo
@@ -28,6 +28,7 @@ logger = structlog.get_logger("app.queue.worker")
 async def startup(ctx: dict[str, Any]) -> None:
     """Initialize Supabase client, repositories, and domain services in ARQ context."""
     settings = get_settings()
+    validate_startup_config(settings)
     ctx["settings"] = settings
 
     await init_supabase(settings)

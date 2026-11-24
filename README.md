@@ -147,53 +147,108 @@ docker-compose up -d --build
 
 ---
 
-## Deployment on Render (Webhook Mode)
+## Deployment on Render
 
-To deploy the backend to [Render](https://render.com) (or any containerized hosting platform):
+This repository includes a production-ready Render Blueprint ([render.yaml](render.yaml)) defining all three interconnected services in the same region (`oregon`):
+1. **Web Service (`email-agent-api`)**: FastAPI API, Google OAuth endpoints, and Telegram webhook receiver.
+2. **Background Worker (`email-agent-worker`)**: ARQ worker processing 5-minute cron inbox synchronization, Groq LLM analyses, draft generation, and daily digests.
+3. **Key Value Store (`email-agent-redis`)**: Managed Redis instance providing ARQ job queueing, update deduplication, and rate limiting.
 
-### 1. Build & Start Commands
-- **Environment:** Python 3.12 (or Docker using `Dockerfile`)
-- **Build Command:** `uv sync --frozen --no-dev`
-- **Start Command:** `uv run uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+---
 
-### 2. Environment Variables Checklist
-Configure the following environment variables in your Render Web Service dashboard:
+### Method A: 1-Click Blueprint Deployment (Recommended)
 
-| Variable | Description | Example / Required |
-| :--- | :--- | :--- |
-| `ENVIRONMENT` | Deployment environment | `production` |
-| `PUBLIC_BASE_URL` | Public Render domain (no trailing slash) | `https://email-agent-backend.onrender.com` |
-| `TELEGRAM_MODE` | Bot operational mode (`webhook` or `polling`) | `webhook` |
-| `TELEGRAM_BOT_TOKEN` | Bot API token from [@BotFather](https://t.me/BotFather) | `123456789:ABC...` |
-| `TELEGRAM_BOT_USERNAME` | Username of your Telegram bot | `YourEmailAgentBot` |
-| `TELEGRAM_WEBHOOK_SECRET` | 32+ character random secret string | Generated token (letters, digits, `_`, `-`) |
-| `SUPABASE_URL` | Supabase project HTTPS URL | `https://xyzcompany.supabase.co` |
-| `SUPABASE_SECRET_KEY` | Supabase Service Role / Secret Key | `your_supabase_secret_key` |
-| `APP_SECRET_KEY` | Min 32-char key for session & state HMAC | Random hex or urlsafe string |
-| `TOKEN_ENCRYPTION_KEY` | Exact 32-byte key for AES-256-GCM vault | 32 alphanumeric bytes or hex string |
-| `GROQ_API_KEY` | Groq Cloud API Key | `your_groq_api_key` |
-| `GOOGLE_CLIENT_ID` | Google Cloud OAuth 2.0 Client ID | `...apps.googleusercontent.com` |
-| `GOOGLE_CLIENT_SECRET` | Google Cloud OAuth 2.0 Client Secret | `your_google_client_secret` |
-| `GOOGLE_REDIRECT_URI` | OAuth callback URL matching Google Console | `https://email-agent-backend.onrender.com/api/v1/auth/google/callback` |
-| `REDIS_URL` | Redis instance connection string | `redis://red-xxx:6379` (e.g. Render Redis) |
+1. Log in to [Render Dashboard](https://dashboard.render.com).
+2. Click **New +** > **Blueprint**.
+3. Connect your GitHub account and select the **`Sabithulla-16/Email-Agent`** repository.
+4. Render will parse `render.yaml` and display the three resources:
+   - `email-agent-api` (Web Service)
+   - `email-agent-worker` (Background Worker)
+   - `email-agent-redis` (Key Value Store)
+5. Fill in the prompted secret values (marked `sync: false` in `render.yaml`).
+6. Click **Apply**. Render will provision Redis, build both Python services using `uv`, wire the internal `REDIS_URL`, and deploy!
 
-### 3. Automated Webhook Setup
-When `TELEGRAM_MODE=webhook`, the backend automatically:
-1. Calls Telegram's `setWebhook` on startup with:
-   - `url = PUBLIC_BASE_URL + "/api/v1/telegram/webhook"`
-   - `secret_token = TELEGRAM_WEBHOOK_SECRET`
-2. Validates registration with `getWebhookInfo` and logs pending updates without leaking tokens.
-3. Serves the webhook on `POST /api/v1/telegram/webhook`, verifying `X-Telegram-Bot-Api-Secret-Token` via constant-time comparison, deduplicating updates in Redis, and executing handling in the background.
+---
 
-### 4. Manual Fallback Scripts
-If you ever need to inspect or reset webhooks manually:
-```bash
-# Check current webhook status, URL, pending count, and last error
-python scripts/webhook_info.py
+### Method B: Manual Service-by-Service Configuration
 
-# Manually configure the webhook
-python scripts/set_webhook.py
-```
+If you prefer provisioning each service individually via the Render UI:
+
+#### Service 1: Key Value (Redis)
+1. In Render Dashboard, click **New +** > **Key Value**.
+2. **Name**: `email-agent-redis`
+3. **Region**: `Oregon (US West)` *(ensure all services share the exact same region)*.
+4. **Plan**: `Starter` (or `Free` if available).
+5. **Access Control**: Keep empty `[]` to restrict access to Render's internal private network.
+6. Click **Create Key Value**. Note the **Internal Connection String** (format: `redis://...`).
+
+#### Service 2: Web Service (FastAPI)
+1. Click **New +** > **Web Service**.
+2. Connect `Sabithulla-16/Email-Agent`.
+3. **Name**: `email-agent-api`
+4. **Region**: `Oregon (US West)` *(matches Key Value)*
+5. **Runtime**: `Python 3`
+6. **Build Command**: `pip install uv && uv sync --frozen --no-dev`
+7. **Start Command**: `uv run uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+8. **Health Check Path**: `/healthz`
+9. **Environment Variables**: Add the variables listed in the checklist below. Note: Set `REDIS_URL` to the Internal Connection String of `email-agent-redis`.
+10. Click **Create Web Service**. Once deployed, copy your public service domain (e.g. `https://email-agent-api.onrender.com`).
+
+#### Service 3: Background Worker (ARQ)
+1. Click **New +** > **Background Worker**.
+2. Connect `Sabithulla-16/Email-Agent`.
+3. **Name**: `email-agent-worker`
+4. **Region**: `Oregon (US West)` *(matches Key Value)*
+5. **Runtime**: `Python 3`
+6. **Build Command**: `pip install uv && uv sync --frozen --no-dev`
+7. **Start Command**: `uv run arq app.queue.worker.WorkerSettings`
+8. **Environment Variables**: Add the variables listed in the checklist below.
+9. Click **Create Background Worker**.
+
+---
+
+### Environment Variables Checklist
+
+The application enforces **fail-fast startup validation**. In `production` mode, the server will immediately terminate on boot with a clear error report if any required variable is missing or set to a placeholder.
+
+| Variable | Required For | Description | Example / Recommended Value |
+| :--- | :--- | :--- | :--- |
+| `ENVIRONMENT` | Web & Worker | Deployment environment | `production` |
+| `PUBLIC_BASE_URL` | Web & Worker | Public URL of Web Service (no trailing slash) | `https://email-agent-api.onrender.com` |
+| `PORT` | Web | Port dynamically assigned by Render | `8000` (Render overrides automatically via `$PORT`) |
+| `PYTHON_VERSION` | Web & Worker | Pinned Python runtime version | `3.12.0` |
+| `UV_PYTHON_DOWNLOADS` | Web & Worker | Use Render's system Python runtime | `never` |
+| `TELEGRAM_MODE` | Web | Operational mode for bot updates | `webhook` |
+| `TELEGRAM_BOT_TOKEN` | Web & Worker | Bot token issued by [@BotFather](https://t.me/BotFather) | `123456789:ABCdefGhIJK...` |
+| `TELEGRAM_BOT_USERNAME` | Web | Username of your Telegram bot | `YourEmailAgentBot` |
+| `TELEGRAM_WEBHOOK_SECRET`| Web | 32+ char secret for `X-Telegram-Bot-Api-Secret-Token` | Random urlsafe/hex string |
+| `SUPABASE_URL` | Web & Worker | Supabase project HTTPS URL | `https://<ref>.supabase.co` |
+| `SUPABASE_SECRET_KEY` | Web & Worker | Supabase Service Role Secret Key (bypasses RLS) | Real Supabase service role secret |
+| `APP_SECRET_KEY` | Web & Worker | 32+ char key for session cookies and CSRF tokens | Random 32+ character hex string |
+| `TOKEN_ENCRYPTION_KEY` | Web & Worker | Exact 32-byte key for AES-256-GCM token vault | Exact 32 alphanumeric bytes or hex string |
+| `GROQ_API_KEY` | Web & Worker | Groq Cloud API Key | Real Groq API key |
+| `GOOGLE_CLIENT_ID` | Web & Worker | Google Cloud OAuth 2.0 Client ID | `...apps.googleusercontent.com` |
+| `GOOGLE_CLIENT_SECRET` | Web & Worker | Google Cloud OAuth 2.0 Client Secret | Real Google OAuth client secret |
+| `GOOGLE_REDIRECT_URI` | Web & Worker | Public OAuth callback URL | `https://email-agent-api.onrender.com/api/v1/auth/google/callback` |
+| `REDIS_URL` | Web & Worker | Internal connection URL to Key Value | Handled automatically via `render.yaml` service reference |
+| `SENTRY_DSN` | Web & Worker | (Optional) Sentry error monitoring DSN | `https://...` |
+
+---
+
+### Post-Deployment Checklist
+
+1. **Google Cloud Console**:
+   - Go to [Google Cloud Console Credentials](https://console.cloud.google.com/apis/credentials).
+   - Under your OAuth 2.0 Client ID, add `https://<your-render-domain>/api/v1/auth/google/callback` to **Authorized redirect URIs**.
+2. **Verify Telegram Webhook**:
+   - On deployment, `app/main.py` automatically registers the webhook with Telegram.
+   - Verify health by checking `https://<your-render-domain>/healthz` or running:
+     ```bash
+     python scripts/webhook_info.py
+     ```
+3. **Connect Gmail in Telegram**:
+   - Send `/start` to your Telegram bot.
+   - Tap **⟡ Connect Gmail** to initiate OAuth and authorize your Gmail inbox!
 
 ---
 

@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import AsyncClient
 
-from app.core.config import Settings
+from app.core.config import Settings, validate_startup_config
 from app.core.logging import pii_masking_processor
 
 
@@ -32,6 +32,67 @@ def test_pii_log_masking() -> None:
     assert masked["token"] == "[REDACTED]"
     assert masked["nested"]["refresh_token"] == "[REDACTED]"  # type: ignore[index]
     assert masked["nested"]["safe_key"] == "safe_value"  # type: ignore[index]
+
+
+def test_validate_startup_config_dev_and_test_pass(test_settings: Settings) -> None:
+    """In test or dev mode, placeholder values do not raise."""
+    validate_startup_config(test_settings)
+
+
+def test_validate_startup_config_production_fails_fast() -> None:
+    """In production mode, missing/insecure configs must fail fast with clear errors."""
+    bad_prod_settings = Settings(
+        ENVIRONMENT="production",
+        APP_SECRET_KEY="insecure-dev-key",
+        TOKEN_ENCRYPTION_KEY="short",
+        SUPABASE_URL="http://localhost:54321",
+        SUPABASE_SECRET_KEY="dummy",
+        GROQ_API_KEY="mock",
+        GOOGLE_CLIENT_ID="mock",
+        GOOGLE_CLIENT_SECRET="mock",
+        GOOGLE_REDIRECT_URI="http://localhost:8000/callback",
+        PUBLIC_BASE_URL="http://localhost:8000",
+        TELEGRAM_BOT_TOKEN="123456:mock",
+        TELEGRAM_MODE="webhook",
+        TELEGRAM_WEBHOOK_SECRET="mock",
+    )
+    with pytest.raises(RuntimeError) as exc_info:
+        validate_startup_config(bad_prod_settings)
+
+    err_msg = str(exc_info.value)
+    assert "APP_SECRET_KEY" in err_msg
+    assert "TOKEN_ENCRYPTION_KEY" in err_msg
+    assert "SUPABASE_URL" in err_msg
+    assert "SUPABASE_SECRET_KEY" in err_msg
+    assert "GROQ_API_KEY" in err_msg
+    assert "GOOGLE_CLIENT_ID" in err_msg
+    assert "GOOGLE_CLIENT_SECRET" in err_msg
+    assert "GOOGLE_REDIRECT_URI" in err_msg
+    assert "PUBLIC_BASE_URL" in err_msg
+    assert "TELEGRAM_BOT_TOKEN" in err_msg
+    assert "TELEGRAM_WEBHOOK_SECRET" in err_msg
+
+
+def test_validate_startup_config_production_valid() -> None:
+    """In production mode, fully valid configs pass validation."""
+    good_prod_settings = Settings(
+        ENVIRONMENT="production",
+        APP_SECRET_KEY="a" * 32,
+        TOKEN_ENCRYPTION_KEY="01234567890123456789012345678901",
+        SUPABASE_URL="https://project.supabase.co",
+        SUPABASE_SECRET_KEY="real_secret_role_key_value",
+        REDIS_URL="rediss://default:password@host:6379",
+        GROQ_API_KEY="real_groq_production_key",
+        GOOGLE_CLIENT_ID="real-client-id.apps.googleusercontent.com",
+        GOOGLE_CLIENT_SECRET="real-client-secret-val",
+        GOOGLE_REDIRECT_URI="https://email-agent.onrender.com/api/v1/auth/google/callback",
+        PUBLIC_BASE_URL="https://email-agent.onrender.com",
+        TELEGRAM_BOT_TOKEN="987654321:AAECorrectProductionToken",
+        TELEGRAM_MODE="webhook",
+        TELEGRAM_WEBHOOK_SECRET="secure_random_telegram_webhook_secret_12345",
+    )
+    # Should not raise
+    validate_startup_config(good_prod_settings)
 
 
 @pytest.mark.asyncio

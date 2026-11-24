@@ -141,6 +141,120 @@ class Settings(BaseSettings):
         return self.ENVIRONMENT == "production"
 
 
+def validate_startup_config(settings: Settings) -> None:
+    """Validate all required environment variables for deployment.
+
+    Fails fast with a detailed error message if any required environment variable
+    is missing or insecure in staging or production environments.
+    """
+    if not (settings.is_production or settings.ENVIRONMENT == "staging"):
+        return
+
+    errors: list[str] = []
+
+    # 1. APP_SECRET_KEY
+    app_sec = settings.APP_SECRET_KEY.get_secret_value() if settings.APP_SECRET_KEY else ""
+    if not app_sec or len(app_sec) < 32 or "insecure" in app_sec.lower():
+        errors.append(
+            "APP_SECRET_KEY: Must be a secure random string of at least 32 characters."
+        )
+
+    # 2. TOKEN_ENCRYPTION_KEY
+    tok_sec = (
+        settings.TOKEN_ENCRYPTION_KEY.get_secret_value()
+        if settings.TOKEN_ENCRYPTION_KEY
+        else ""
+    )
+    if not tok_sec or len(tok_sec.encode("utf-8")) != 32:
+        errors.append(
+            "TOKEN_ENCRYPTION_KEY: Must be exactly 32 bytes (256 bits) for AES-256-GCM vault."
+        )
+
+    # 3. SUPABASE_URL & SUPABASE_SECRET_KEY
+    if (
+        not settings.SUPABASE_URL
+        or not settings.SUPABASE_URL.startswith("https://")
+        or "localhost" in settings.SUPABASE_URL
+    ):
+        errors.append(
+            "SUPABASE_URL: Must be a valid HTTPS URL (e.g. https://<project-ref>.supabase.co)."
+        )
+    sup_key = (
+        settings.SUPABASE_SECRET_KEY.get_secret_value()
+        if settings.SUPABASE_SECRET_KEY
+        else ""
+    )
+    if not sup_key or "dummy" in sup_key.lower():
+        errors.append(
+            "SUPABASE_SECRET_KEY: Required and cannot be a dummy placeholder."
+        )
+
+    # 4. REDIS_URL
+    if not settings.REDIS_URL or not (
+        settings.REDIS_URL.startswith("redis://")
+        or settings.REDIS_URL.startswith("rediss://")
+    ):
+        errors.append(
+            "REDIS_URL: Must be a valid Redis connection string (redis:// or rediss://)."
+        )
+
+    # 5. GROQ_API_KEY
+    groq_k = settings.GROQ_API_KEY.get_secret_value() if settings.GROQ_API_KEY else ""
+    if not groq_k or "mock" in groq_k.lower():
+        errors.append("GROQ_API_KEY: Required and cannot be a mock placeholder.")
+
+    # 6. GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI
+    if not settings.GOOGLE_CLIENT_ID or "mock" in settings.GOOGLE_CLIENT_ID.lower():
+        errors.append("GOOGLE_CLIENT_ID: Required and cannot be a mock placeholder.")
+    gsec = (
+        settings.GOOGLE_CLIENT_SECRET.get_secret_value()
+        if settings.GOOGLE_CLIENT_SECRET
+        else ""
+    )
+    if not gsec or "mock" in gsec.lower():
+        errors.append("GOOGLE_CLIENT_SECRET: Required and cannot be a mock placeholder.")
+    if not settings.GOOGLE_REDIRECT_URI or not settings.GOOGLE_REDIRECT_URI.startswith("https://"):
+        errors.append(
+            "GOOGLE_REDIRECT_URI: Must be a public HTTPS callback URL "
+            "(e.g. https://<service>.onrender.com/api/v1/auth/google/callback)."
+        )
+
+    # 7. PUBLIC_BASE_URL
+    if not settings.PUBLIC_BASE_URL or not settings.PUBLIC_BASE_URL.startswith("https://"):
+        errors.append(
+            "PUBLIC_BASE_URL: Must be a public HTTPS URL (e.g. https://<service>.onrender.com)."
+        )
+
+    # 8. TELEGRAM_BOT_TOKEN & TELEGRAM_WEBHOOK_SECRET
+    tg_tok = (
+        settings.TELEGRAM_BOT_TOKEN.get_secret_value()
+        if settings.TELEGRAM_BOT_TOKEN
+        else ""
+    )
+    if not tg_tok or "mock" in tg_tok.lower():
+        errors.append("TELEGRAM_BOT_TOKEN: Required and cannot be a mock placeholder.")
+
+    if settings.TELEGRAM_MODE == "webhook":
+        wh_sec = (
+            settings.TELEGRAM_WEBHOOK_SECRET.get_secret_value()
+            if settings.TELEGRAM_WEBHOOK_SECRET
+            else ""
+        )
+        if not wh_sec or "mock" in wh_sec.lower():
+            errors.append(
+                "TELEGRAM_WEBHOOK_SECRET: Required when TELEGRAM_MODE=webhook "
+                "and cannot be a mock placeholder."
+            )
+
+    if errors:
+        bullet_list = "\n  - " + "\n  - ".join(errors)
+        raise RuntimeError(
+            f"Startup failed! {len(errors)} required environment variable(s) "
+            f"missing or invalid for {settings.ENVIRONMENT} mode:{bullet_list}\n\n"
+            "Please configure these variables in Render Dashboard or environment before starting."
+        )
+
+
 @lru_cache
 def get_settings() -> Settings:
     """Cached singleton settings instance."""

@@ -7,7 +7,7 @@ import sentry_sdk
 from fastapi import FastAPI, Response, status
 
 from app.api.v1.router import api_router
-from app.core.config import Settings, get_settings
+from app.core.config import Settings, get_settings, validate_startup_config
 from app.core.logging import get_logger, setup_logging
 from app.core.middleware import register_exception_handlers, setup_middleware
 from app.db.client import check_supabase_health, close_supabase, init_supabase
@@ -22,6 +22,10 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     log_lvl = "DEBUG" if settings.DEBUG else "INFO"
     setup_logging(is_production=settings.is_production, log_level=log_lvl)
     logger = get_logger("app.main")
+
+    # Fail-fast validation of required environment variables
+    validate_startup_config(settings)
+
     logger.info("app_starting", env=settings.ENVIRONMENT, host=settings.HOST, port=settings.PORT)
 
     # Optional Sentry initialization
