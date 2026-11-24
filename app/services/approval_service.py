@@ -110,7 +110,12 @@ class ApprovalService:
     # -------------------------------------------------------------------------
     # Draft Generation
     # -------------------------------------------------------------------------
-    async def generate_draft_for_email(self, email_id: UUID | str, user_id: UUID | str) -> DraftRow:
+    async def generate_draft_for_email(
+        self,
+        email_id: UUID | str,
+        user_id: UUID | str,
+        api_key: str | None = None,
+    ) -> DraftRow:
         """Generate AI reply draft for an email with need_reply=True and no high risk flags."""
         email = await self.email_repo.get_by_id(email_id)
         if not email or email.user_id != UUID(str(user_id)):
@@ -145,6 +150,24 @@ class ApprovalService:
         if not user:
             raise NotFoundError(f"User {user_id} not found")
 
+        # Resolve user-specific Groq API key (BYOK) if configured
+        user_key = api_key
+        if not user_key and hasattr(self.auth_service, "get_user_groq_api_key"):
+            try:
+                res_key = self.auth_service.get_user_groq_api_key(user_id)
+                if hasattr(res_key, "__await__"):
+                    user_key = await res_key
+                else:
+                    user_key = res_key
+            except Exception:
+                user_key = None
+
+        groq_client = (
+            AsyncGroq(api_key=user_key.strip(), max_retries=0)
+            if user_key and user_key.strip()
+            else self.groq_client
+        )
+
         # Load draft generation prompt
         prompt_template = (PROMPTS_DIR / "draft_v1.txt").read_text(encoding="utf-8")
         tone = user.prefs.get("tone", "friendly")
@@ -169,7 +192,7 @@ class ApprovalService:
         model_used = candidate_models[0]
         for m in candidate_models:
             try:
-                resp = await self.groq_client.chat.completions.create(
+                resp = await groq_client.chat.completions.create(
                     model=m,
                     messages=[
                         {"role": "system", "content": system_prompt},
@@ -307,6 +330,7 @@ class ApprovalService:
         user_id: UUID | str,
         instruction: str,
         tone: str | None = None,
+        api_key: str | None = None,
     ) -> tuple[DraftRow, DraftVersionRow]:
         """Revise draft with Groq LLM using feedback instructions or tone presets."""
         draft = await self._get_user_draft(draft_id, user_id)
@@ -321,6 +345,24 @@ class ApprovalService:
         user = await self.user_repo.get_by_id(user_id)
         if not user:
             raise NotFoundError("User not found")
+
+        # Resolve user-specific Groq API key (BYOK) if configured
+        user_key = api_key
+        if not user_key and hasattr(self.auth_service, "get_user_groq_api_key"):
+            try:
+                res_key = self.auth_service.get_user_groq_api_key(user_id)
+                if hasattr(res_key, "__await__"):
+                    user_key = await res_key
+                else:
+                    user_key = res_key
+            except Exception:
+                user_key = None
+
+        groq_client = (
+            AsyncGroq(api_key=user_key.strip(), max_retries=0)
+            if user_key and user_key.strip()
+            else self.groq_client
+        )
 
         # Fetch previous version body
         versions = await self.draft_repo.get_versions(draft.id)
@@ -354,7 +396,7 @@ class ApprovalService:
         )
 
         model_name = self.settings.GROQ_DRAFT_MODEL
-        resp = await self.groq_client.chat.completions.create(
+        resp = await groq_client.chat.completions.create(
             model=model_name,
             messages=[
                 {"role": "system", "content": sys_prompt},

@@ -108,6 +108,21 @@ async def run_user_sync_pipeline(ctx: dict[str, Any], user_id: str) -> dict[str,
     sync_res = await sync_svc.sync_user_emails(user_id)
     new_count = sync_res.get("synced", sync_res.get("new_emails_synced", 0))
 
+    # Retrieve user Groq API key (BYOK) if configured
+    user_groq_key: str | None = None
+    auth_svc: Any = getattr(approval_svc, "auth_service", None) or ctx.get("auth_service")
+    if auth_svc and hasattr(auth_svc, "get_user_groq_api_key"):
+        try:
+            res_k = auth_svc.get_user_groq_api_key(user_id)
+            if hasattr(res_k, "__await__"):
+                val = await res_k
+            else:
+                val = res_k
+            if isinstance(val, str) and val.strip():
+                user_groq_key = val.strip()
+        except Exception as exc:
+            logger.warning("worker_get_user_groq_key_failed", user_id=user_id, error=str(exc))
+
     # 2. Process recent unanalyzed emails for this user (ensure all are digested)
     email_items = await email_repo.list_by_user(user_id=user_id, limit=50)
     analyzed_count = 0
@@ -121,7 +136,10 @@ async def run_user_sync_pipeline(ctx: dict[str, Any], user_id: str) -> dict[str,
                 continue
 
             # Perform Groq LLM analysis
-            analysis_data = await groq_svc.analyze_email(full_email)
+            if user_groq_key:
+                analysis_data = await groq_svc.analyze_email(full_email, api_key=user_groq_key)
+            else:
+                analysis_data = await groq_svc.analyze_email(full_email)
             stored_analysis = await email_repo.upsert_analysis(analysis_data)
             analyzed_count += 1
 
@@ -142,7 +160,12 @@ async def run_user_sync_pipeline(ctx: dict[str, Any], user_id: str) -> dict[str,
                                 )
                                 continue
 
-                    draft = await approval_svc.generate_draft_for_email(full_email.id, user_id)
+                    if user_groq_key:
+                        draft = await approval_svc.generate_draft_for_email(
+                            full_email.id, user_id, api_key=user_groq_key
+                        )
+                    else:
+                        draft = await approval_svc.generate_draft_for_email(full_email.id, user_id)
                     versions = await draft_repo.get_versions(draft.id)
                     if versions:
                         await notif_svc.notify_new_draft(

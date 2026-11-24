@@ -14,8 +14,10 @@ import structlog
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token
 
+from groq import AsyncGroq
+
 from app.core.config import Settings, get_settings
-from app.core.errors import UnauthorizedError, ValidationError
+from app.core.errors import NotFoundError, UnauthorizedError, ValidationError
 from app.core.vault import TokenVault, get_token_vault
 from app.db.repos.user_repo import UserRepo
 from app.models.db import (
@@ -25,6 +27,7 @@ from app.models.db import (
     SessionRow,
     UserCreate,
     UserRow,
+    UserUpdate,
 )
 from app.queue.redis import get_redis
 
@@ -370,3 +373,76 @@ class AuthService:
     def generate_csrf_token(self) -> str:
         """Generate a random cryptographic CSRF token for double-submit cookie."""
         return secrets.token_hex(32)
+
+    # -------------------------------------------------------------------------
+    # User-Supplied Groq API Key (BYOK) Management
+    # -------------------------------------------------------------------------
+    async def get_user_groq_api_key(self, user_id: UUID | str) -> str | None:
+        """Retrieve and decrypt user's personal Groq API key if configured."""
+        user = await self.user_repo.get_by_id(user_id)
+        if not user or not user.prefs:
+            return None
+        enc_key = user.prefs.get("groq_api_key_encrypted")
+        if not enc_key:
+            return None
+        try:
+            return self.vault.decrypt(enc_key)
+        except Exception as exc:
+            logger.warning("failed_to_decrypt_user_groq_key", user_id=str(user_id), error=str(exc))
+            return None
+
+    async def get_user_groq_key_status(self, user_id: UUID | str) -> dict[str, Any]:
+        """Return masked key info and verification status for UI / Telegram."""
+        user = await self.user_repo.get_by_id(user_id)
+        if not user or not user.prefs:
+            return {"has_key": False, "masked_key": None}
+        enc_key = user.prefs.get("groq_api_key_encrypted")
+        masked = user.prefs.get("groq_api_key_masked")
+        return {
+            "has_key": bool(enc_key),
+            "masked_key": masked if enc_key else None,
+        }
+
+    async def set_user_groq_api_key(self, user_id: UUID | str, raw_api_key: str) -> str:
+        """Validate, encrypt with AES-256-GCM, and save the user's Groq API key."""
+        cleaned = raw_api_key.strip()
+        if not cleaned.startswith("gsk_") or len(cleaned) < 20:
+            raise ValidationError("Invalid Groq API key format. Key should start with 'gsk_'")
+
+        # Validate with Groq API
+        try:
+            test_client = AsyncGroq(api_key=cleaned, max_retries=0, timeout=10.0)
+            await test_client.models.list()
+        except Exception as exc:
+            logger.warning("groq_api_key_validation_failed", error=str(exc))
+            raise ValidationError(f"Invalid Groq API key: {exc}") from exc
+
+        user = await self.user_repo.get_by_id(user_id)
+        if not user:
+            raise NotFoundError(f"User {user_id} not found")
+
+        enc_key, _ = self.vault.encrypt(cleaned)
+        masked_key = f"{cleaned[:7]}...{cleaned[-4:]}"
+        new_prefs = dict(user.prefs)
+        new_prefs["groq_api_key_encrypted"] = enc_key
+        new_prefs["groq_api_key_masked"] = masked_key
+
+        await self.user_repo.update_user(user.id, UserUpdate(prefs=new_prefs))
+        logger.info(
+            "user_groq_key_configured_successfully",
+            user_id=str(user.id),
+            masked=masked_key,
+        )
+        return masked_key
+
+    async def remove_user_groq_api_key(self, user_id: UUID | str) -> bool:
+        """Remove user's stored Groq API key."""
+        user = await self.user_repo.get_by_id(user_id)
+        if not user:
+            return False
+        new_prefs = dict(user.prefs)
+        new_prefs.pop("groq_api_key_encrypted", None)
+        new_prefs.pop("groq_api_key_masked", None)
+        await self.user_repo.update_user(user.id, UserUpdate(prefs=new_prefs))
+        logger.info("user_groq_key_removed", user_id=str(user.id))
+        return True

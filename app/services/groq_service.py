@@ -44,13 +44,21 @@ class GroqService:
         self._system_prompt = self._load_system_prompt()
         self._model_cooldowns: dict[str, float] = {}
 
+    def get_client(self, api_key: str | None = None) -> AsyncGroq:
+        """Return an AsyncGroq client using the provided user key or the system default."""
+        if api_key and api_key.strip():
+            return AsyncGroq(api_key=api_key.strip(), max_retries=0)
+        return self.client
+
     def _load_system_prompt(self) -> str:
         prompt_file = PROMPTS_DIR / f"{PROMPT_VERSION}.txt"
         if prompt_file.exists():
             return prompt_file.read_text(encoding="utf-8")
         return "You are an executive email triage assistant. Return a valid JSON analysis."
 
-    async def analyze_email(self, email: EmailRow) -> EmailAnalysisCreate:
+    async def analyze_email(
+        self, email: EmailRow, api_key: str | None = None
+    ) -> EmailAnalysisCreate:
         """Run full email analysis pipeline with redaction and retry fallback."""
         # 1. Check for Security/OTP emails to skip LLM entirely
         if is_security_or_otp_email(email.subject, email.snippet or "", email.body_clean):
@@ -90,12 +98,13 @@ class GroqService:
 
         # 4. Call Groq with bounded concurrency and retry
         async with self._semaphore:
-            return await self._call_groq_with_retries(email, user_message)
+            return await self._call_groq_with_retries(email, user_message, api_key=api_key)
 
     async def _call_groq_with_retries(
-        self, email: EmailRow, user_message: str
+        self, email: EmailRow, user_message: str, api_key: str | None = None
     ) -> EmailAnalysisCreate:
         """Execute Groq API call with model fallback and exponential backoff on 429."""
+        client = self.get_client(api_key)
         candidate_models = [
             self.settings.GROQ_FAST_MODEL,
             getattr(self.settings, "GROQ_FALLBACK_MODEL", "qwen/qwen3.8-27b"),
@@ -119,7 +128,7 @@ class GroqService:
         for model_name in models_to_try:
             start_time = time.perf_counter()
             try:
-                chat_completion = await self.client.chat.completions.create(
+                chat_completion = await client.chat.completions.create(
                     model=model_name,
                     messages=[
                         {"role": "system", "content": self._system_prompt},
@@ -276,12 +285,14 @@ class GroqService:
         fallback_models: list[str] | None = None,
         temperature: float = 0.2,
         max_tokens: int | None = None,
+        api_key: str | None = None,
     ) -> tuple[str, str]:
         """Call Groq chat completion with automatic fallback to secondary models on rate limit.
 
         Catches 429 rate limit errors or capacity issues and tries fallbacks (e.g. Qwen, Llama).
         Returns (content, model_name_used).
         """
+        client = self.get_client(api_key)
         primary = primary_model or self.settings.GROQ_FAST_MODEL
         default_fallbacks = [
             getattr(self.settings, "GROQ_FALLBACK_MODEL", "qwen/qwen3.8-27b"),
@@ -314,7 +325,7 @@ class GroqService:
                 if max_tokens:
                     kwargs["max_tokens"] = max_tokens
 
-                resp = await self.client.chat.completions.create(**kwargs)
+                resp = await client.chat.completions.create(**kwargs)
                 content = (resp.choices[0].message.content or "").strip()
                 logger.info("groq_completion_succeeded", model=model)
                 return content, model

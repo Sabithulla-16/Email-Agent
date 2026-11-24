@@ -21,10 +21,12 @@ class InboxQAService:
         email_repo: EmailRepo,
         settings: Settings | None = None,
         groq_service: GroqService | None = None,
+        auth_service: Any | None = None,
     ) -> None:
         self.email_repo = email_repo
         self.settings = settings or get_settings()
         self.groq_service = groq_service or GroqService(settings=self.settings)
+        self.auth_service = auth_service
         # Expose groq_client for backward compatibility with mock tests
         self.groq_client = self.groq_service.client
 
@@ -33,8 +35,20 @@ class InboxQAService:
         user_id: UUID | str,
         query: str,
         limit: int = 50,
+        api_key: str | None = None,
     ) -> dict[str, Any]:
         """Answer natural language question based on the user's digested email catalog."""
+        user_key = api_key
+        if not user_key and self.auth_service and hasattr(self.auth_service, "get_user_groq_api_key"):
+            try:
+                res_k = self.auth_service.get_user_groq_api_key(user_id)
+                if hasattr(res_k, "__await__"):
+                    user_key = await res_k
+                else:
+                    user_key = res_k
+            except Exception:
+                user_key = None
+
         # 1. Fetch recent synced emails for the user
         emails = await self.email_repo.list_by_user(user_id=user_id, limit=limit)
         if not emails:
@@ -99,6 +113,7 @@ class InboxQAService:
             answer_text, _ = await self.groq_service.chat_completion_with_fallback(
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.1,
+                api_key=user_key,
             )
         except Exception as exc:
             logger.warning("inbox_qa_fallback_error", error=str(exc))

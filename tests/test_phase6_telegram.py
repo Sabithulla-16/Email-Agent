@@ -455,3 +455,60 @@ async def test_telegram_api_link_and_webhook():
             mock_svc.process_webhook_update.assert_awaited_once()
     finally:
         app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_telegram_setkey_and_mykey_flow(telegram_service):
+    """Test setting and checking personal Groq API key via Telegram commands."""
+    chat_id = 112233
+    user_id = uuid.uuid4()
+    now = datetime.now(UTC)
+
+    active_link = TelegramLinkRow(
+        user_id=user_id,
+        chat_id=chat_id,
+        is_active=True,
+        linked_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    telegram_service.telegram_repo.get_link_by_chat_id = AsyncMock(return_value=active_link)
+    telegram_service.telegram_client.send_message = AsyncMock(return_value={"message_id": 999})
+    telegram_service.telegram_client.delete_message = AsyncMock()
+
+    mock_auth = MagicMock()
+    mock_auth.set_user_groq_api_key = AsyncMock(return_value="gsk_tes...1234")
+    mock_auth.get_user_groq_key_status = AsyncMock(
+        return_value={"has_key": True, "masked_key": "gsk_tes...1234"}
+    )
+    telegram_service.auth_service = mock_auth
+
+    # 1. Test /setkey
+    set_update = {
+        "update_id": 2001,
+        "message": {
+            "message_id": 55,
+            "chat": {"id": chat_id},
+            "text": "/setkey gsk_test_api_key_1234567890_abcdef",
+        },
+    }
+    await telegram_service.process_webhook_update(set_update)
+
+    # Asserts that sensitive message was deleted immediately
+    telegram_service.telegram_client.delete_message.assert_any_await(chat_id=chat_id, message_id=55)
+    mock_auth.set_user_groq_api_key.assert_awaited_once_with(
+        user_id, "gsk_test_api_key_1234567890_abcdef"
+    )
+
+    # 2. Test /mykey
+    mykey_update = {
+        "update_id": 2002,
+        "message": {
+            "message_id": 56,
+            "chat": {"id": chat_id},
+            "text": "/mykey",
+        },
+    }
+    await telegram_service.process_webhook_update(mykey_update)
+    mock_auth.get_user_groq_key_status.assert_awaited_once_with(user_id)
+

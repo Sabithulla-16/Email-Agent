@@ -52,12 +52,14 @@ class DigestService:
         telegram_repo: TelegramRepo,
         telegram_client: TelegramClient | None = None,
         groq_service: GroqService | None = None,
+        auth_service: Any | None = None,
         settings: Settings | None = None,
     ) -> None:
         self.user_repo = user_repo
         self.email_repo = email_repo
         self.draft_repo = draft_repo
         self.telegram_repo = telegram_repo
+        self.auth_service = auth_service
         self.settings = settings or get_settings()
         self.telegram_client = telegram_client or TelegramClient(
             telegram_repo=telegram_repo, settings=self.settings
@@ -76,6 +78,21 @@ class DigestService:
             return {"status": "skipped", "reason": "digest_disabled_in_prefs"}
 
         # 1. Fetch recent emails and pending drafts
+        user_groq_key: str | None = None
+        if (
+            hasattr(self, "auth_service")
+            and self.auth_service
+            and hasattr(self.auth_service, "get_user_groq_api_key")
+        ):
+            try:
+                res_k = self.auth_service.get_user_groq_api_key(user_id)
+                if hasattr(res_k, "__await__"):
+                    user_groq_key = await res_k
+                else:
+                    user_groq_key = res_k
+            except Exception:
+                user_groq_key = None
+
         emails = await self.email_repo.list_by_user(user_id=user.id, limit=20)
         pending_drafts = await self.draft_repo.list_by_user(
             user_id=user.id, status=DraftStatus.PENDING_APPROVAL.value, limit=50
@@ -115,6 +132,7 @@ class DigestService:
                         messages=[{"role": "user", "content": prompt}],
                         temperature=0.2,
                         max_tokens=50,
+                        api_key=user_groq_key,
                     )
                 except Exception as exc:
                     logger.warning(

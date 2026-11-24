@@ -291,6 +291,125 @@ async def handle_help(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(help_text, parse_mode="HTML")
 
 
+async def handle_setkey(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /setkey command - securely store user-provided Groq API key."""
+    if not update.effective_chat or not update.message:
+        return
+    chat_id = update.effective_chat.id
+    user_repo, telegram_repo, _, _, _, _ = await _get_repos()
+    link = await telegram_repo.get_link_by_chat_id(chat_id)
+    if not link:
+        await update.message.reply_text("⚠️ Please connect your Gmail first using /start.")
+        return
+
+    # Delete the message containing the raw API key for privacy
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
+    args = context.args or []
+    if not args:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                "ℹ️ <b>How to set your Groq API key:</b>\n\n"
+                "Send: <code>/setkey gsk_your_groq_key_here</code>\n\n"
+                "<i>(Get a free key in 30 seconds at https://console.groq.com/keys)</i>\n"
+                "<i>Your key is encrypted with AES-256 and your message is deleted immediately for privacy.</i>"
+            ),
+            parse_mode="HTML",
+        )
+        return
+
+    raw_key = args[0].strip()
+    status_msg = await context.bot.send_message(
+        chat_id=chat_id,
+        text="🔄 <i>Validating and encrypting your Groq API key...</i>",
+        parse_mode="HTML",
+    )
+    auth_svc = AuthService(user_repo=user_repo, settings=get_settings())
+    try:
+        masked = await auth_svc.set_user_groq_api_key(link.user_id, raw_key)
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                "✅ <b>Groq API Key Configured Successfully!</b>\n\n"
+                f"• Key: <code>{masked}</code>\n"
+                f"• Encryption: <b>AES-256-GCM</b>\n\n"
+                "All email summaries, triage analysis, and reply drafts will now run on your dedicated Groq quota.\n"
+                "Use /mykey to view status or /removekey to delete it."
+            ),
+            parse_mode="HTML",
+        )
+    except Exception as exc:
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"❌ <b>Failed to set Groq key:</b> {exc}",
+            parse_mode="HTML",
+        )
+
+
+async def handle_mykey(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /mykey command - view current Groq API key status."""
+    if not update.effective_chat or not update.message:
+        return
+    chat_id = update.effective_chat.id
+    user_repo, telegram_repo, _, _, _, _ = await _get_repos()
+    link = await telegram_repo.get_link_by_chat_id(chat_id)
+    if not link:
+        await update.message.reply_text("⚠️ Please connect your Gmail first using /start.")
+        return
+
+    auth_svc = AuthService(user_repo=user_repo, settings=get_settings())
+    status = await auth_svc.get_user_groq_key_status(link.user_id)
+    if status.get("has_key"):
+        masked = status.get("masked_key", "Configured")
+        await update.message.reply_text(
+            f"🔑 <b>Your Groq API Key:</b>\n\n"
+            f"• Status: <b>Active</b>\n"
+            f"• Key: <code>{masked}</code>\n\n"
+            f"To update it, send: <code>/setkey gsk_...</code>\n"
+            f"To remove it, send: /removekey",
+            parse_mode="HTML",
+        )
+    else:
+        await update.message.reply_text(
+            "ℹ️ <b>No Personal Groq API Key Configured</b>\n\n"
+            "Currently using default system tier.\n\n"
+            "To connect your own dedicated Groq quota, send:\n"
+            "<code>/setkey gsk_your_key_here</code>\n\n"
+            "<i>(Get a free key at https://console.groq.com/keys)</i>",
+            parse_mode="HTML",
+        )
+
+
+async def handle_removekey(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /removekey command - delete stored Groq API key."""
+    if not update.effective_chat or not update.message:
+        return
+    chat_id = update.effective_chat.id
+    user_repo, telegram_repo, _, _, _, _ = await _get_repos()
+    link = await telegram_repo.get_link_by_chat_id(chat_id)
+    if not link:
+        return
+
+    auth_svc = AuthService(user_repo=user_repo, settings=get_settings())
+    await auth_svc.remove_user_groq_api_key(link.user_id)
+    await update.message.reply_text(
+        "🗑️ <b>Personal Groq API Key Removed.</b> Reverted to system default.",
+        parse_mode="HTML",
+    )
+
+
 def build_application() -> Application:
     """Build python-telegram-bot Application instance with configured HTTPXRequest."""
     settings = get_settings()
@@ -318,6 +437,9 @@ def build_application() -> Application:
 
     app.add_handler(CommandHandler("start", handle_start))
     app.add_handler(CommandHandler("pending", handle_pending))
+    app.add_handler(CommandHandler("setkey", handle_setkey))
+    app.add_handler(CommandHandler("mykey", handle_mykey))
+    app.add_handler(CommandHandler("removekey", handle_removekey))
     app.add_handler(CommandHandler("help", handle_help))
     app.add_handler(CallbackQueryHandler(handle_callback_query))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))

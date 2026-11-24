@@ -243,3 +243,124 @@ async def test_csrf_validation_fails_on_post(client: AsyncClient) -> None:
         res = await client.patch("/api/v1/me/preferences", json={"timezone": "Europe/London"})
         assert res.status_code == 403
         assert res.json()["code"] == "FORBIDDEN"
+
+
+@pytest.mark.asyncio
+async def test_user_groq_key_vault_and_validation() -> None:
+    """Ensure user-provided Groq API keys are validated, encrypted, and retrievable."""
+    now = datetime.now(UTC)
+    user_id = uuid4()
+    mock_user = UserRow(
+        id=user_id,
+        google_sub="sub-byok",
+        email="byok@example.com",
+        prefs={},
+        created_at=now,
+        updated_at=now,
+    )
+
+    mock_user_repo = MagicMock()
+    mock_user_repo.get_by_id = AsyncMock(return_value=mock_user)
+    mock_user_repo.update_user = AsyncMock()
+
+    settings = Settings(
+        TOKEN_ENCRYPTION_KEY="01234567890123456789012345678901",
+        TOKEN_KEY_VERSION=1,
+    )
+    auth_svc = AuthService(user_repo=mock_user_repo, settings=settings)
+
+    # 1. Invalid key format rejected
+    with pytest.raises(ValidationError):
+        await auth_svc.set_user_groq_api_key(user_id, "invalid_prefix_key")
+
+    # 2. Valid key format verified against Groq and encrypted with AES-256-GCM
+    raw_key = "gsk_live_1234567890abcdef1234567890"
+    with patch("groq.AsyncGroq.models") as mock_models:
+        mock_models.list = AsyncMock(return_value=[])
+        masked = await auth_svc.set_user_groq_api_key(user_id, raw_key)
+        assert masked == "gsk_liv...7890"
+        mock_user_repo.update_user.assert_awaited_once()
+
+    # Verify decryption
+    saved_prefs = mock_user_repo.update_user.call_args[0][1].prefs
+    assert "groq_api_key_encrypted" in saved_prefs
+    assert saved_prefs["groq_api_key_encrypted"] != raw_key
+    mock_user.prefs = saved_prefs
+
+    recovered_key = await auth_svc.get_user_groq_api_key(user_id)
+    assert recovered_key == raw_key
+
+    # Status check
+    status = await auth_svc.get_user_groq_key_status(user_id)
+    assert status["has_key"] is True
+    assert status["masked_key"] == "gsk_liv...7890"
+
+    # Removal check
+    await auth_svc.remove_user_groq_api_key(user_id)
+    cleared_prefs = mock_user_repo.update_user.call_args[0][1].prefs
+    assert "groq_api_key_encrypted" not in cleared_prefs
+
+
+@pytest.mark.asyncio
+async def test_me_groq_key_endpoints(client: AsyncClient) -> None:
+    """Test GET, POST, and DELETE /api/v1/me/groq-key endpoints."""
+    now = datetime.now(UTC)
+    mock_user = UserRow(
+        id=uuid4(),
+        google_sub="sub-endpoints",
+        email="user_endpoints@example.com",
+        prefs={"groq_api_key_encrypted": "enc_data", "groq_api_key_masked": "gsk_123...456"},
+        created_at=now,
+        updated_at=now,
+    )
+
+    with (
+        patch(
+            "app.services.auth_service.AuthService.authenticate_session",
+            new_callable=AsyncMock,
+            return_value=mock_user,
+        ),
+        patch(
+            "app.services.auth_service.AuthService.get_user_groq_key_status",
+            new_callable=AsyncMock,
+            return_value={"has_key": True, "masked_key": "gsk_123...456"},
+        ),
+        patch(
+            "app.services.auth_service.AuthService.set_user_groq_api_key",
+            new_callable=AsyncMock,
+            return_value="gsk_new...999",
+        ),
+        patch(
+            "app.services.auth_service.AuthService.remove_user_groq_api_key",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch("app.api.deps.verify_csrf", new_callable=AsyncMock, return_value=True),
+    ):
+        # GET status
+        res_get = await client.get(
+            "/api/v1/me/groq-key",
+            cookies={"session_token": "valid_session"},
+        )
+        assert res_get.status_code == 200
+        assert res_get.json()["has_key"] is True
+
+        # POST new key
+        res_post = await client.post(
+            "/api/v1/me/groq-key",
+            json={"api_key": "gsk_new_key_1234567890abcdef999"},
+            cookies={"session_token": "valid_session", "csrf_token": "test_csrf"},
+            headers={"X-CSRF-Token": "test_csrf"},
+        )
+        assert res_post.status_code == 200
+        assert res_post.json()["status"] == "configured"
+
+        # DELETE key
+        res_del = await client.delete(
+            "/api/v1/me/groq-key",
+            cookies={"session_token": "valid_session", "csrf_token": "test_csrf"},
+            headers={"X-CSRF-Token": "test_csrf"},
+        )
+        assert res_del.status_code == 200
+        assert res_del.json()["status"] == "removed"
+

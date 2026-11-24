@@ -5,6 +5,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Cookie, Depends, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
+from pydantic import BaseModel, Field
 
 from app.api.deps import get_auth_service, get_current_user, get_user_repo, verify_csrf
 from app.core.config import Settings, get_settings
@@ -113,14 +114,29 @@ async def google_auth_callback(
             if msg_to_delete:
                 await tg_client.delete_message(chat_id=tg_chat_id, message_id=msg_to_delete)
 
-            await tg_client.send_message(
-                chat_id=tg_chat_id,
-                text=(
+            has_groq_key = bool(user.prefs and user.prefs.get("groq_api_key_encrypted"))
+            if not has_groq_key:
+                welcome_text = (
+                    f"✦ <b>Gmail Connected Successfully!</b>\n\n"
+                    f"Account: <code>{user.email}</code>\n"
+                    f"User: <b>{user.name}</b>\n\n"
+                    f"🔑 <b>Final Step: Set your Groq API Key</b>\n"
+                    f"To enable AI email triage, summaries, and reply drafts on your own quota, enter your Groq API key:\n\n"
+                    f"<code>/setkey gsk_your_key_here</code>\n\n"
+                    f"<i>(Don't have one? Get a free key at https://console.groq.com/keys)</i>\n"
+                    f"<i>Your key is encrypted with AES-256 and your message is deleted immediately for security.</i>"
+                )
+            else:
+                welcome_text = (
                     f"✦ <b>Gmail Connected!</b>\n\n"
                     f"Account: <code>{user.email}</code>\n"
                     f"User: <b>{user.name}</b>\n\n"
                     f"You're all set! Use /pending to see any email drafts awaiting approval."
-                ),
+                )
+
+            await tg_client.send_message(
+                chat_id=tg_chat_id,
+                text=welcome_text,
             )
             logger.info("telegram_chat_linked_via_oauth", user_id=str(user.id), chat_id=tg_chat_id)
         except Exception as exc:
@@ -356,6 +372,43 @@ async def update_user_preferences(
         "timezone": updated_user.timezone,
         "digest_time": str(updated_user.digest_time),
     }
+
+
+class GroqKeyPayload(BaseModel):
+    api_key: str = Field(..., min_length=20, max_length=256)
+
+
+@router.get("/me/groq-key")
+async def get_groq_key_status(
+    current_user: Annotated[UserRow, Depends(get_current_user)],
+    auth_service: Annotated[AuthService, Depends(get_auth_service)],
+) -> dict[str, Any]:
+    """Check whether the current user has configured a personal Groq API key."""
+    return await auth_service.get_user_groq_key_status(current_user.id)
+
+
+@router.post("/me/groq-key", dependencies=[Depends(verify_csrf)])
+async def set_groq_key(
+    payload: GroqKeyPayload,
+    current_user: Annotated[UserRow, Depends(get_current_user)],
+    auth_service: Annotated[AuthService, Depends(get_auth_service)],
+) -> dict[str, Any]:
+    """Validate, encrypt with AES-256-GCM, and save the user's Groq API key."""
+    masked = await auth_service.set_user_groq_api_key(current_user.id, payload.api_key)
+    return {
+        "status": "configured",
+        "masked_key": masked,
+    }
+
+
+@router.delete("/me/groq-key", dependencies=[Depends(verify_csrf)])
+async def delete_groq_key(
+    current_user: Annotated[UserRow, Depends(get_current_user)],
+    auth_service: Annotated[AuthService, Depends(get_auth_service)],
+) -> dict[str, Any]:
+    """Remove user's stored personal Groq API key."""
+    await auth_service.remove_user_groq_api_key(current_user.id)
+    return {"status": "removed"}
 
 
 @router.delete("/me", dependencies=[Depends(verify_csrf)])

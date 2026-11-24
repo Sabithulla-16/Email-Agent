@@ -68,6 +68,7 @@ class TelegramService:
         notification_service: NotificationService,
         telegram_client: TelegramClient | None = None,
         groq_service: GroqService | None = None,
+        auth_service: Any | None = None,
         settings: Settings | None = None,
     ) -> None:
         self.telegram_repo = telegram_repo
@@ -76,6 +77,7 @@ class TelegramService:
         self.draft_repo = draft_repo
         self.approval_service = approval_service
         self.notification_service = notification_service
+        self.auth_service = auth_service or getattr(approval_service, "auth_service", None)
         self.settings = settings or get_settings()
         self.telegram_client = telegram_client or TelegramClient(
             telegram_repo=telegram_repo, settings=self.settings
@@ -244,6 +246,14 @@ class TelegramService:
 
         # 2. Command Processing
         if text.startswith("/"):
+            # Automatically delete messages containing sensitive API keys for privacy
+            if text.startswith("/setkey") and message.get("message_id"):
+                try:
+                    await self.telegram_client.delete_message(
+                        chat_id=chat_id, message_id=int(message["message_id"])
+                    )
+                except Exception:
+                    pass
             await self._handle_command(chat_id, text)
             return
 
@@ -281,7 +291,11 @@ class TelegramService:
         )
         msg_id = status_msg.get("message_id") if isinstance(status_msg, dict) else None
         try:
-            qa_svc = InboxQAService(email_repo=self.email_repo, settings=self.settings)
+            qa_svc = InboxQAService(
+                email_repo=self.email_repo,
+                settings=self.settings,
+                auth_service=self.auth_service,
+            )
             result = await qa_svc.answer_question(user_id=user_id, query=query)
             answer = result.get("answer", "")
             citations = result.get("citations", [])
@@ -328,14 +342,29 @@ class TelegramService:
                 user_id = await self.telegram_repo.consume_link_token(token_hash)
                 if user_id:
                     await self.telegram_repo.link_chat(user_id=user_id, chat_id=chat_id)
-                    await self.telegram_client.send_message(
-                        chat_id=chat_id,
-                        text=(
-                            "🎉 <b>Account successfully linked!</b>\n\n"
-                            "You will receive email summaries and draft approvals here.\n"
-                            "Type /help to view all bot commands."
-                        ),
-                    )
+                    user = await self.user_repo.get_by_id(user_id)
+                    has_key = bool(user and user.prefs and user.prefs.get("groq_api_key_encrypted"))
+                    if not has_key:
+                        await self.telegram_client.send_message(
+                            chat_id=chat_id,
+                            text=(
+                                "🎉 <b>Account successfully linked!</b>\n\n"
+                                "🔑 <b>Final Step: Set your Groq API Key</b>\n"
+                                "To enable AI email analysis and reply drafts on your own quota, enter your Groq API key:\n\n"
+                                "<code>/setkey gsk_your_key_here</code>\n\n"
+                                "<i>(Get a free key at https://console.groq.com/keys)</i>\n"
+                                "<i>Your key is encrypted with AES-256 and your message is deleted immediately for privacy.</i>"
+                            ),
+                        )
+                    else:
+                        await self.telegram_client.send_message(
+                            chat_id=chat_id,
+                            text=(
+                                "🎉 <b>Account successfully linked!</b>\n\n"
+                                "You will receive email summaries and draft approvals here.\n"
+                                "Type /help to view all bot commands."
+                            ),
+                        )
                 else:
                     await self.telegram_client.send_message(
                         chat_id=chat_id,
@@ -345,6 +374,12 @@ class TelegramService:
                 user = await self.user_repo.get_by_id(link.user_id)
                 user_email = user.email if user else "your Gmail"
                 user_name = user.name if user and user.name else "there"
+                has_key = bool(user and user.prefs and user.prefs.get("groq_api_key_encrypted"))
+                key_line = (
+                    "• 🔑 /setkey — Set personal Groq API key\n"
+                    if not has_key
+                    else "• 🔑 /mykey — View Groq API key status\n"
+                )
                 await self.telegram_client.send_message(
                     chat_id=chat_id,
                     text=(
@@ -356,6 +391,7 @@ class TelegramService:
                         f"• /sync — Pull new emails immediately\n"
                         f"• /digest — Generate your daily digest\n"
                         f"• /urgent — View urgent unread emails\n"
+                        f"{key_line}"
                         f"• /help — View all commands\n\n"
                         f"<i>You can also ask me any question about your inbox directly!</i>"
                     ),
@@ -397,7 +433,98 @@ class TelegramService:
 
         user_id = link.user_id
 
-        if cmd == "/disconnect":
+        if cmd == "/setkey":
+            if len(parts) < 2:
+                await self.telegram_client.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        "ℹ️ <b>How to set your Groq API key:</b>\n\n"
+                        "Send: <code>/setkey gsk_your_groq_key_here</code>\n\n"
+                        "<i>(You can get a free key in 30 seconds at https://console.groq.com/keys)</i>\n"
+                        "<i>Your key is encrypted with AES-256 and your message is automatically deleted for privacy.</i>"
+                    ),
+                )
+                return
+
+            raw_key = parts[1].strip()
+            status_msg = await self.telegram_client.send_message(
+                chat_id=chat_id,
+                text="🔄 <i>Validating and securely encrypting your Groq API key...</i>",
+            )
+            status_id = status_msg.get("message_id") if isinstance(status_msg, dict) else None
+
+            try:
+                auth_svc = self.auth_service or getattr(self.approval_service, "auth_service", None)
+                if not auth_svc:
+                    auth_svc = AuthService(user_repo=self.user_repo, settings=self.settings)
+
+                masked = await auth_svc.set_user_groq_api_key(user_id, raw_key)
+                if status_id:
+                    await self.telegram_client.delete_message(
+                        chat_id=chat_id, message_id=int(status_id)
+                    )
+
+                await self.telegram_client.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        "✅ <b>Groq API Key Configured Successfully!</b>\n\n"
+                        f"• Key: <code>{masked}</code>\n"
+                        f"• Encryption: <b>AES-256-GCM</b>\n\n"
+                        "All email summaries, triage analysis, and reply drafts will now run on your dedicated Groq quota.\n"
+                        "Use /mykey to view status or /removekey to delete it."
+                    ),
+                )
+            except Exception as exc:
+                if status_id:
+                    await self.telegram_client.delete_message(
+                        chat_id=chat_id, message_id=int(status_id)
+                    )
+                await self.telegram_client.send_message(
+                    chat_id=chat_id,
+                    text=f"❌ <b>Failed to set Groq key:</b> {escape_html(str(exc))}",
+                )
+
+        elif cmd == "/mykey":
+            auth_svc = self.auth_service or getattr(self.approval_service, "auth_service", None)
+            if not auth_svc:
+                auth_svc = AuthService(user_repo=self.user_repo, settings=self.settings)
+
+            key_status = await auth_svc.get_user_groq_key_status(user_id)
+            if key_status.get("has_key"):
+                masked = key_status.get("masked_key", "Configured")
+                await self.telegram_client.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        "🔑 <b>Your Groq API Key:</b>\n\n"
+                        f"• Status: <b>Active</b>\n"
+                        f"• Key: <code>{masked}</code>\n\n"
+                        "To update it, send: <code>/setkey gsk_...</code>\n"
+                        "To remove it, send: /removekey"
+                    ),
+                )
+            else:
+                await self.telegram_client.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        "ℹ️ <b>No Personal Groq API Key Configured</b>\n\n"
+                        "Currently using default system tier.\n\n"
+                        "To connect your own dedicated Groq quota, send:\n"
+                        "<code>/setkey gsk_your_key_here</code>\n\n"
+                        "<i>(Get a free key at https://console.groq.com/keys)</i>"
+                    ),
+                )
+
+        elif cmd == "/removekey":
+            auth_svc = self.auth_service or getattr(self.approval_service, "auth_service", None)
+            if not auth_svc:
+                auth_svc = AuthService(user_repo=self.user_repo, settings=self.settings)
+            await auth_svc.remove_user_groq_api_key(user_id)
+            await self.telegram_client.send_message(
+                chat_id=chat_id,
+                text="🗑️ <b>Personal Groq API Key Removed.</b> Reverted to system default.",
+            )
+
+        elif cmd == "/disconnect":
             await self.telegram_repo.deactivate_chat(chat_id)
             await self.telegram_client.send_message(
                 chat_id=chat_id,
@@ -602,7 +729,10 @@ class TelegramService:
                     "• /followups - View tracked promises & commitments\n"
                     "• <i>Tip: Send any question in chat to search your emails!</i>\n"
                     "• <i>Tip: Send a voice note to revise any draft!</i>\n\n"
-                    "<b>Settings:</b>\n"
+                    "<b>Settings & Keys:</b>\n"
+                    "• /setkey &lt;key&gt; - Set personal Groq API key\n"
+                    "• /mykey - Check current Groq API key status\n"
+                    "• /removekey - Remove personal Groq key\n"
                     "• /snooze &lt;hours&gt; - Pause notifications\n"
                     "• /mute - Mute notifications for 24h\n"
                     "• /settings - View notification settings\n"
