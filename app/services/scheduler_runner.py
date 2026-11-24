@@ -27,11 +27,11 @@ from app.services.sync_service import SyncService
 logger = structlog.get_logger("app.services.scheduler_runner")
 
 
-async def run_direct_sync_cycle() -> dict[str, Any]:
-    """Execute one full scheduler cycle directly for due users.
+async def run_direct_sync_cycle(target_user_id: str | None = None) -> dict[str, Any]:
+    """Execute one full scheduler cycle directly.
 
-    Claims due users, syncs inboxes, analyzes messages, generates drafts,
-    and dispatches due digests.
+    If target_user_id is provided, syncs only that specific user immediately.
+    Otherwise, syncs all active users and dispatches daily digests for due users.
     """
     settings = get_settings()
     client = get_supabase()
@@ -82,27 +82,57 @@ async def run_direct_sync_cycle() -> dict[str, Any]:
         "settings": settings,
     }
 
-    due_users = await user_repo.claim_due_users(limit=20)
+    if target_user_id:
+        target_user = await user_repo.get_by_id(target_user_id)
+        if not target_user or target_user.deleted_at:
+            return {
+                "status": "not_found",
+                "claimed_users": 0,
+                "new_emails_synced": 0,
+                "drafts_created": 0,
+                "results": [],
+            }
+        sync_res = await run_user_sync_pipeline(ctx, str(target_user.id))
+        return {
+            "status": "success",
+            "claimed_users": 1,
+            "new_emails_synced": sync_res.get("new_emails_synced", 0),
+            "drafts_created": sync_res.get("drafts_created", 0),
+            "emails_analyzed": sync_res.get("emails_analyzed", 0),
+            "results": [sync_res],
+        }
+
+    # Global cycle: sync active users and dispatch due digests
+    active_users = await user_repo.list_active_users(limit=50)
     now = datetime.now(UTC)
     results = []
+    total_new = 0
+    total_drafts = 0
 
-    for user in due_users:
+    for user in active_users:
         try:
             # 1. Sync inbox and generate reply drafts
             sync_res = await run_user_sync_pipeline(ctx, str(user.id))
             results.append(sync_res)
+            total_new += sync_res.get("new_emails_synced", 0)
+            total_drafts += sync_res.get("drafts_created", 0)
 
-            # 2. Daily digest if due
-            if user.next_digest_at and user.next_digest_at <= now:
+            # 2. Check if daily digest is due
+            if user.next_digest_at is None:
+                next_digest = compute_next_digest_time(
+                    digest_time=user.digest_time,
+                    user_timezone=user.timezone,
+                    now=now,
+                )
+                await user_repo.update_user(user.id, UserUpdate(next_digest_at=next_digest))
+            elif user.next_digest_at <= now:
                 await run_user_digest(ctx, str(user.id))
-
-            # 3. Advance schedule
-            next_digest = compute_next_digest_time(
-                digest_time=user.digest_time,
-                user_timezone=user.timezone,
-                now=now,
-            )
-            await user_repo.update_user(user.id, UserUpdate(next_digest_at=next_digest))
+                next_digest = compute_next_digest_time(
+                    digest_time=user.digest_time,
+                    user_timezone=user.timezone,
+                    now=now,
+                )
+                await user_repo.update_user(user.id, UserUpdate(next_digest_at=next_digest))
         except Exception as exc:
             logger.error(
                 "direct_sync_user_failed",
@@ -110,9 +140,11 @@ async def run_direct_sync_cycle() -> dict[str, Any]:
                 error=str(exc),
             )
 
-    logger.info("direct_sync_cycle_completed", claimed_users=len(due_users))
+    logger.info("direct_sync_cycle_completed", active_users=len(active_users))
     return {
         "status": "success",
-        "claimed_users": len(due_users),
+        "claimed_users": len(active_users),
+        "new_emails_synced": total_new,
+        "drafts_created": total_drafts,
         "results": results,
     }

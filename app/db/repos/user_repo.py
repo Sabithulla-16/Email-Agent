@@ -78,6 +78,22 @@ class UserRepo(BaseRepo):
         data = await self._execute_with_retry(_query)
         return [UserRow.model_validate(row) for row in data]
 
+    async def list_active_users(self, limit: int = 50) -> list[UserRow]:
+        """List active users whose accounts have not been deleted."""
+
+        async def _query() -> list[dict[str, Any]]:
+            res = (
+                await self.client.table("users")
+                .select("*")
+                .is_("deleted_at", "null")
+                .limit(limit)
+                .execute()
+            )
+            return cast(list[dict[str, Any]], res.data)
+
+        data = await self._execute_with_retry(_query)
+        return [UserRow.model_validate(row) for row in data]
+
     async def delete_user_data(self, user_id: UUID | str) -> None:
         """Call atomic delete_user_data RPC."""
 

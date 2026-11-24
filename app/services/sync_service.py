@@ -92,7 +92,12 @@ class SyncService:
                 synced_count=synced_count,
                 history_id=newest_history_id,
             )
-            return {"synced": synced_count, "history_id": newest_history_id, "status": "success"}
+            return {
+                "synced": synced_count,
+                "new_emails_synced": synced_count,
+                "history_id": newest_history_id,
+                "status": "success",
+            }
 
         except Exception as exc:
             logger.exception("sync_failed", user_id=str(user_id), error=str(exc))

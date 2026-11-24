@@ -503,16 +503,23 @@ class TelegramService:
             )
             msg_id = status_msg.get("message_id") if isinstance(status_msg, dict) else None
             try:
-                cycle_res = await run_direct_sync_cycle()
-                claimed = cycle_res.get("claimed_users", 0)
+                cycle_res = await run_direct_sync_cycle(target_user_id=str(user_id))
+                new_synced = cycle_res.get("new_emails_synced", 0)
+                drafts_created = cycle_res.get("drafts_created", 0)
                 if msg_id:
                     await self.telegram_client.delete_message(chat_id=chat_id, message_id=msg_id)
+
+                lines = [
+                    "✅ <b>Inbox Sync Complete!</b>\n",
+                    f"• New emails synced: <b>{new_synced}</b>",
+                    f"• Reply drafts ready: <b>{drafts_created}</b>",
+                ]
+                if drafts_created > 0:
+                    lines.append("\nUse /pending to review and approve drafts.")
+
                 await self.telegram_client.send_message(
                     chat_id=chat_id,
-                    text=(
-                        f"✅ <b>Inbox Sync Complete!</b>\n"
-                        f"Processed active users ({claimed}) and drafted replies."
-                    ),
+                    text="\n".join(lines),
                 )
             except Exception as exc:
                 if msg_id:

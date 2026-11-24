@@ -351,6 +351,59 @@ async def test_handle_start_command_when_already_linked(telegram_service):
     assert call_kwargs.get("reply_markup") is None
 
 
+@pytest.mark.asyncio
+async def test_handle_sync_command_triggers_targeted_sync(telegram_service):
+    chat_id = 998877
+    user_id = uuid.uuid4()
+    now = datetime.now(UTC)
+
+    active_link = TelegramLinkRow(
+        user_id=user_id,
+        chat_id=chat_id,
+        is_active=True,
+        linked_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    telegram_service.telegram_repo.get_link_by_chat_id = AsyncMock(return_value=active_link)
+    telegram_service.telegram_client.send_message = AsyncMock(
+        side_effect=[{"message_id": 101}, {"message_id": 102}]
+    )
+    telegram_service.telegram_client.delete_message = AsyncMock()
+
+    update = {
+        "update_id": 1004,
+        "message": {
+            "chat": {"id": chat_id},
+            "text": "/sync",
+        },
+    }
+
+    with (
+        patch("app.services.telegram_service.get_redis", return_value=None),
+        patch(
+            "app.services.telegram_service.run_direct_sync_cycle",
+            new_callable=AsyncMock,
+            return_value={
+                "status": "success",
+                "claimed_users": 1,
+                "new_emails_synced": 3,
+                "drafts_created": 1,
+            },
+        ) as mock_sync_cycle,
+    ):
+        await telegram_service.process_webhook_update(update)
+
+    mock_sync_cycle.assert_awaited_once_with(target_user_id=str(user_id))
+    telegram_service.telegram_client.delete_message.assert_awaited_once_with(
+        chat_id=chat_id, message_id=101
+    )
+    final_call_args = telegram_service.telegram_client.send_message.await_args_list[-1]
+    assert "New emails synced: <b>3</b>" in final_call_args.kwargs["text"]
+    assert "Reply drafts ready: <b>1</b>" in final_call_args.kwargs["text"]
+    assert "/pending" in final_call_args.kwargs["text"]
+
+
 # =============================================================================
 # API Route Tests
 # =============================================================================

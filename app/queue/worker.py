@@ -106,7 +106,7 @@ async def run_user_sync_pipeline(ctx: dict[str, Any], user_id: str) -> dict[str,
 
     # 1. Sync emails from Gmail
     sync_res = await sync_svc.sync_user_emails(user_id)
-    new_count = sync_res.get("new_emails_synced", 0)
+    new_count = sync_res.get("synced", sync_res.get("new_emails_synced", 0))
 
     # 2. Process recent unanalyzed emails for this user (ensure all are digested)
     email_items = await email_repo.list_by_user(user_id=user_id, limit=50)
