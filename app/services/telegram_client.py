@@ -240,6 +240,25 @@ class TelegramClient:
 
         return await self._post_request("editMessageText", payload, chat_id=chat_id)
 
+    async def delete_message(self, chat_id: int, message_id: int) -> bool:
+        """Delete a message from a chat."""
+        try:
+            payload = {"chat_id": chat_id, "message_id": message_id}
+            res = await self._post_request("deleteMessage", payload, chat_id=chat_id)
+            return bool(res)
+        except Exception as exc:
+            logger.debug(
+                "telegram_delete_message_failed",
+                chat_id=chat_id,
+                message_id=message_id,
+                error=str(exc),
+            )
+            return False
+
+    async def get_me(self) -> dict[str, Any] | None:
+        """Fetch bot metadata (id, username, first_name)."""
+        return await self._post_request("getMe", {})
+
     async def get_file(self, file_id: str) -> dict[str, Any] | None:
         """Get metadata for a Telegram file."""
         return await self._post_request("getFile", {"file_id": file_id})

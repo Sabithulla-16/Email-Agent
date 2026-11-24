@@ -249,10 +249,11 @@ class TelegramService:
 
     async def _handle_inbox_qa(self, chat_id: int, user_id: UUID | str, query: str) -> None:
         """Answer natural language question about user's inbox using Groq LLM."""
-        await self.telegram_client.send_message(
+        status_msg = await self.telegram_client.send_message(
             chat_id=chat_id,
             text="🔍 <i>Searching your emails...</i>",
         )
+        msg_id = status_msg.get("message_id") if isinstance(status_msg, dict) else None
         try:
             qa_svc = InboxQAService(email_repo=self.email_repo, settings=self.settings)
             result = await qa_svc.answer_question(user_id=user_id, query=query)
@@ -267,11 +268,16 @@ class TelegramService:
                     sender = escape_html(c.get("sender", ""))
                     resp_text += f"\n• <b>{subj}</b> (from {sender})"
 
+            if msg_id:
+                await self.telegram_client.delete_message(chat_id=chat_id, message_id=msg_id)
+
             await self.telegram_client.send_message(
                 chat_id=chat_id,
                 text=resp_text,
             )
         except Exception as exc:
+            if msg_id:
+                await self.telegram_client.delete_message(chat_id=chat_id, message_id=msg_id)
             logger.error("telegram_qa_failed", query=query, error=str(exc))
             await self.telegram_client.send_message(
                 chat_id=chat_id,
@@ -442,13 +448,16 @@ class TelegramService:
                 await self._handle_inbox_qa(chat_id, user_id, query)
 
         elif cmd == "/sync":
-            await self.telegram_client.send_message(
+            status_msg = await self.telegram_client.send_message(
                 chat_id=chat_id,
                 text="🔄 <i>Synchronizing your inbox from Gmail...</i>",
             )
+            msg_id = status_msg.get("message_id") if isinstance(status_msg, dict) else None
             try:
                 cycle_res = await run_direct_sync_cycle()
                 claimed = cycle_res.get("claimed_users", 0)
+                if msg_id:
+                    await self.telegram_client.delete_message(chat_id=chat_id, message_id=msg_id)
                 await self.telegram_client.send_message(
                     chat_id=chat_id,
                     text=(
@@ -457,6 +466,8 @@ class TelegramService:
                     ),
                 )
             except Exception as exc:
+                if msg_id:
+                    await self.telegram_client.delete_message(chat_id=chat_id, message_id=msg_id)
                 logger.error("telegram_sync_command_failed", error=str(exc))
                 await self.telegram_client.send_message(
                     chat_id=chat_id,
@@ -464,10 +475,11 @@ class TelegramService:
                 )
 
         elif cmd == "/digest":
-            await self.telegram_client.send_message(
+            status_msg = await self.telegram_client.send_message(
                 chat_id=chat_id,
                 text="📊 <i>Compiling your daily email digest...</i>",
             )
+            msg_id = status_msg.get("message_id") if isinstance(status_msg, dict) else None
             try:
                 digest_svc = DigestService(
                     user_repo=self.user_repo,
@@ -477,12 +489,16 @@ class TelegramService:
                     settings=self.settings,
                 )
                 res = await digest_svc.generate_and_dispatch_digest(user_id)
+                if msg_id:
+                    await self.telegram_client.delete_message(chat_id=chat_id, message_id=msg_id)
                 if res.get("status") == "skipped":
                     await self.telegram_client.send_message(
                         chat_id=chat_id,
                         text=f"ℹ️ Digest skipped: {res.get('reason', 'no recent activity')}",
                     )
             except Exception as exc:
+                if msg_id:
+                    await self.telegram_client.delete_message(chat_id=chat_id, message_id=msg_id)
                 logger.error("telegram_digest_command_failed", error=str(exc))
                 await self.telegram_client.send_message(
                     chat_id=chat_id,

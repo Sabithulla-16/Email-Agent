@@ -1,9 +1,10 @@
 """Authentication and User Profile Endpoints."""
 
+import html
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Cookie, Depends, Request, Response, status
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app.api.deps import get_auth_service, get_current_user, get_user_repo, verify_csrf
 from app.core.config import Settings, get_settings
@@ -86,6 +87,7 @@ async def google_auth_callback(
         ip=ip,
     )
 
+    tg_url: str | None = None
     # If linked via Telegram chat_id
     if client_state and client_state.startswith("tg_"):
         try:
@@ -93,6 +95,10 @@ async def google_auth_callback(
             telegram_repo = TelegramRepo(get_supabase())
             await telegram_repo.link_chat(user_id=user.id, chat_id=tg_chat_id)
             tg_client = TelegramClient(telegram_repo=telegram_repo, settings=settings)
+            bot_info = await tg_client.get_me()
+            bot_username = bot_info.get("username") if isinstance(bot_info, dict) else None
+            tg_url = f"https://t.me/{bot_username}" if bot_username else "tg://resolve"
+
             await tg_client.send_message(
                 chat_id=tg_chat_id,
                 text=(
@@ -105,32 +111,142 @@ async def google_auth_callback(
             logger.info("telegram_chat_linked_via_oauth", user_id=str(user.id), chat_id=tg_chat_id)
         except Exception as exc:
             logger.warning("failed_to_link_telegram_chat", error=str(exc))
+            tg_url = "tg://resolve"
 
     csrf_token = auth_service.generate_csrf_token()
 
-    # Deliver HttpOnly session cookie
-    response.set_cookie(
-        key="session_token",
-        value=raw_session_token,
-        httponly=True,
-        secure=settings.is_production,
-        samesite="lax",
-        max_age=14 * 86400,
-        path="/",
-    )
-    # Deliver double-submit CSRF cookie (readable by frontend client)
-    response.set_cookie(
-        key="csrf_token",
-        value=csrf_token,
-        httponly=False,
-        secure=settings.is_production,
-        samesite="lax",
-        max_age=14 * 86400,
-        path="/",
-    )
-    # Clear temporary oauth_verifier cookie
-    response.delete_cookie("oauth_verifier", path="/")
+    def _set_auth_cookies(resp: Response) -> None:
+        resp.set_cookie(
+            key="session_token",
+            value=raw_session_token,
+            httponly=True,
+            secure=settings.is_production,
+            samesite="lax",
+            max_age=14 * 86400,
+            path="/",
+        )
+        resp.set_cookie(
+            key="csrf_token",
+            value=csrf_token,
+            httponly=False,
+            secure=settings.is_production,
+            samesite="lax",
+            max_age=14 * 86400,
+            path="/",
+        )
+        resp.delete_cookie("oauth_verifier", path="/")
 
+    # 1. Telegram OAuth flow: Return modern redirect HTML to take user back to Telegram
+    if client_state and client_state.startswith("tg_"):
+        target_tg_url = tg_url or "tg://resolve"
+        esc_email = html.escape(user.email)
+        tg_html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gmail Connected - Email Agent</title>
+  <style>
+    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    body {{
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0f172a;
+      color: #f8fafc;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+    }}
+    .card {{
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 1.25rem;
+      padding: 2.5rem 2rem;
+      max-width: 440px;
+      width: 100%;
+      text-align: center;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+    }}
+    .icon {{
+      font-size: 3.5rem;
+      margin-bottom: 1rem;
+    }}
+    h1 {{
+      font-size: 1.5rem;
+      font-weight: 700;
+      color: #38bdf8;
+      margin-bottom: 0.5rem;
+    }}
+    p {{
+      color: #94a3b8;
+      font-size: 0.95rem;
+      line-height: 1.6;
+      margin-bottom: 1.25rem;
+    }}
+    .email-box {{
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 0.5rem;
+      padding: 0.75rem 1rem;
+      color: #f1f5f9;
+      font-weight: 600;
+      font-size: 0.9rem;
+      margin-bottom: 1.5rem;
+      word-break: break-all;
+    }}
+    .btn {{
+      display: block;
+      width: 100%;
+      background: #2563eb;
+      color: #ffffff;
+      font-weight: 600;
+      text-decoration: none;
+      padding: 0.9rem 1.5rem;
+      border-radius: 0.75rem;
+      font-size: 1rem;
+      transition: background 0.2s;
+    }}
+    .btn:hover {{
+      background: #1d4ed8;
+    }}
+    .hint {{
+      margin-top: 1rem;
+      font-size: 0.8rem;
+      color: #64748b;
+    }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">🎉</div>
+    <h1>Gmail Connected!</h1>
+    <p>Your Google account has been linked to your Telegram email assistant.</p>
+    <div class="email-box">{esc_email}</div>
+    <a href="{target_tg_url}" class="btn" id="returnBtn">Return to Telegram</a>
+    <p class="hint">Returning to Telegram automatically...</p>
+  </div>
+  <script>
+    setTimeout(function() {{
+      window.location.href = "{target_tg_url}";
+    }}, 1200);
+  </script>
+</body>
+</html>"""
+        tg_resp = HTMLResponse(content=tg_html, status_code=status.HTTP_200_OK)
+        _set_auth_cookies(tg_resp)
+        return tg_resp
+
+    # 2. Browser Web OAuth flow: redirect back to frontend login/app screen
+    accept_header = request.headers.get("accept", "")
+    if "text/html" in accept_header:
+        frontend_url = settings.FRONTEND_BASE_URL.rstrip("/")
+        red_resp = RedirectResponse(url=f"{frontend_url}/", status_code=status.HTTP_302_FOUND)
+        _set_auth_cookies(red_resp)
+        return red_resp
+
+    # 3. API / Automated tests: return JSON payload
+    _set_auth_cookies(response)
     return {
         "status": "authenticated",
         "user": {

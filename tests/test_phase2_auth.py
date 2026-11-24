@@ -1,6 +1,6 @@
 """Tests for Phase 2: Token Vault, Key Rotation, Google OAuth, Sessions, CSRF, and Deletion."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -161,6 +161,55 @@ async def test_auth_google_callback_flow(client: AsyncClient) -> None:
         assert data["user"]["email"] == "newuser@example.com"
         assert "session_token" in res.cookies
         assert "csrf_token" in res.cookies
+
+
+@pytest.mark.asyncio
+async def test_google_auth_callback_telegram_redirect(client: AsyncClient) -> None:
+    """Test callback returns HTML redirecting to Telegram when client_state=tg_..."""
+    auth_svc = AuthService(MagicMock(), settings=Settings(ENVIRONMENT="test"))
+    tg_state = auth_svc.create_signed_state(
+        code_verifier="mock_verifier_xyz", client_state="tg_987654321"
+    )
+
+    with (
+        patch(
+            "app.services.auth_service.AuthService.handle_oauth_callback",
+            new_callable=AsyncMock,
+            return_value=(
+                UserRow(
+                    id=uuid4(),
+                    google_sub="sub-new",
+                    email="telegramuser@example.com",
+                    name="Telegram User",
+                    created_at=datetime.now(UTC),
+                    updated_at=datetime.now(UTC),
+                ),
+                "mock_raw_session_token",
+                datetime.now(UTC) + timedelta(days=14),
+            ),
+        ),
+        patch("app.db.repos.user_repo.UserRepo.upsert_oauth_token", new_callable=AsyncMock),
+        patch("app.services.auth_service.AuthService._cache_access_token", new_callable=AsyncMock),
+        patch("app.db.repos.telegram_repo.TelegramRepo.link_chat", new_callable=AsyncMock),
+        patch(
+            "app.services.telegram_client.TelegramClient.send_message",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "app.services.telegram_client.TelegramClient.get_me",
+            new_callable=AsyncMock,
+            return_value={"username": "TestEmailAgentBot"},
+        ),
+    ):
+        res = await client.get(
+            f"/api/v1/auth/google/callback?code=mock_code&state={tg_state}",
+            cookies={"oauth_verifier": "mock_verifier_xyz"},
+        )
+        assert res.status_code == 200
+        assert "text/html" in res.headers.get("content-type", "")
+        assert "Return to Telegram" in res.text
+        assert "https://t.me/TestEmailAgentBot" in res.text
+        assert "session_token" in res.cookies
 
 
 @pytest.mark.asyncio
