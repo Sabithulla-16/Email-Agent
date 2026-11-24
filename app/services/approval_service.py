@@ -376,7 +376,7 @@ class ApprovalService:
             draft_id=draft.id,
             body=parsed_body,
             user_instruction=user_instruction,
-            source="user_compose",
+            source="llm",
             model=model_used,
         )
 

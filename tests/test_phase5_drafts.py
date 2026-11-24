@@ -504,3 +504,4 @@ async def test_create_custom_draft_success(mock_repos):
         assert draft.status == DraftStatus.PENDING_APPROVAL
         assert mock_draft_repo.create_draft.called
         assert mock_draft_repo.create_version.called
+        assert mock_draft_repo.create_version.call_args.kwargs["source"] == "llm"
