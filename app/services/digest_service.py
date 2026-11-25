@@ -84,17 +84,17 @@ def get_digest_window_and_label(
         default_since_local = datetime.combine(
             local_now.date() - timedelta(days=1), time(21, 0), tzinfo=tz
         )
-        title = f"☀️ <b>Morning Digest (9:00 PM – 9:00 AM {escape_html(tz_abbr)})</b>"
+        title = f"◈ <b>Morning Digest (9:00 PM – 9:00 AM {escape_html(tz_abbr)})</b>"
         is_incremental = False
     elif hour < 18:
         # 3:00 PM Afternoon report: covers extra emails after 9:00 AM
         default_since_local = datetime.combine(local_now.date(), time(9, 0), tzinfo=tz)
-        title = f"🌤️ <b>Afternoon Update (9:00 AM – 3:00 PM {escape_html(tz_abbr)})</b>"
+        title = f"◈ <b>Afternoon Update (9:00 AM – 3:00 PM {escape_html(tz_abbr)})</b>"
         is_incremental = True
     else:
         # 9:00 PM Evening report: covers extra emails after 3:00 PM
         default_since_local = datetime.combine(local_now.date(), time(15, 0), tzinfo=tz)
-        title = f"🌙 <b>Evening Update (3:00 PM – 9:00 PM {escape_html(tz_abbr)})</b>"
+        title = f"◈ <b>Evening Update (3:00 PM – 9:00 PM {escape_html(tz_abbr)})</b>"
         is_incremental = True
 
     default_since_utc = default_since_local.astimezone(UTC)
@@ -258,13 +258,13 @@ class DigestService:
         ]
 
         if urgent_emails:
-            digest_lines.append("🚨 <b>High Priority Items:</b>")
+            digest_lines.append("▸ <b>High Priority Items:</b>")
             for subj in urgent_emails[:3]:
                 digest_lines.append(f"• {escape_html(subj)}")
             digest_lines.append("")
 
         if email_summaries:
-            digest_lines.append("📬 <b>Emails Summary:</b>")
+            digest_lines.append("▸ <b>Emails Summary:</b>")
             for item in email_summaries:
                 sender = escape_html(item["sender"])
                 subject = escape_html(item["subject"])
@@ -274,8 +274,8 @@ class DigestService:
 
         if total_pending > 0:
             digest_lines.append(
-                f"👉 <i>You have {total_pending} draft(s) awaiting review. "
-                "Type /pending to review and approve.</i>"
+                f"› <i>You have {total_pending} draft(s) awaiting review. "
+                "Use /pending to review and approve.</i>"
             )
 
         # Include Decision & Commitment Radar on Evening Update (9 PM)
@@ -288,7 +288,7 @@ class DigestService:
                 w_you = radar.get("waiting_on_you", [])
                 w_others = radar.get("waiting_on_others", [])
                 if w_you or w_others:
-                    digest_lines.append("\n🎯 <b>Decision &amp; Commitment Radar:</b>")
+                    digest_lines.append("\n▸ <b>Decision &amp; Commitment Radar:</b>")
                     for item in w_you[:2]:
                         digest_lines.append(
                             f"• Waiting on you: <b>{escape_html(item['sender'])}</b> — "
@@ -321,7 +321,7 @@ class DigestService:
                     "inline_keyboard": [
                         [
                             {
-                                "text": "📬 Review Pending Drafts",
+                                "text": "▸ Review Pending Drafts",
                                 "url": f"{frontend_url}/drafts",
                             }
                         ]
@@ -357,7 +357,7 @@ class DigestService:
                         await send_voice_fn(
                             chat_id=telegram_link.chat_id,
                             audio_bytes=audio_bytes,
-                            caption="🎙️ <i>Morning Audio Briefing</i>",
+                            caption="◉ <i>Morning Audio Briefing</i>",
                         )
                         voice_sent = True
                 except Exception as exc:

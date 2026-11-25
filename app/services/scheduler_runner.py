@@ -26,6 +26,7 @@ from app.services.digest_service import (
 )
 from app.services.groq_service import GroqService
 from app.services.notification_service import NotificationService
+from app.services.scheduled_email_service import ScheduledEmailService
 from app.services.sync_service import SyncService
 
 logger = structlog.get_logger("app.services.scheduler_runner")
@@ -148,6 +149,13 @@ async def run_direct_sync_cycle(target_user_id: str | None = None) -> dict[str, 
                 user_id=str(user.id),
                 error=str(exc),
             )
+
+    # Dispatch any due user-scheduled outbound emails
+    try:
+        sched_svc = ScheduledEmailService(client=client, settings=settings)
+        await sched_svc.dispatch_due_scheduled_emails()
+    except Exception as exc:
+        logger.error("direct_scheduled_emails_dispatch_failed", error=str(exc))
 
     logger.info("direct_sync_cycle_completed", active_users=len(active_users))
     return {

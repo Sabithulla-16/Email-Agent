@@ -24,6 +24,7 @@ from app.services.digest_service import (
 )
 from app.services.groq_service import GroqService
 from app.services.notification_service import NotificationService
+from app.services.scheduled_email_service import ScheduledEmailService
 from app.services.sync_service import SyncService
 
 logger = structlog.get_logger("app.queue.worker")
@@ -245,6 +246,12 @@ async def scheduler_cron_job(ctx: dict[str, Any]) -> dict[str, Any]:
                 str(user.id),
                 _job_id=sync_job_id,
             )
+
+    # Dispatch any due user-scheduled outbound emails
+    try:
+        await ScheduledEmailService(settings=ctx.get("settings")).dispatch_due_scheduled_emails()
+    except Exception as exc:
+        logger.error("worker_scheduled_emails_dispatch_failed", error=str(exc))
 
     logger.info("scheduler_cron_run_finished", claimed_users=claimed_count)
     return {"claimed_users": claimed_count}
