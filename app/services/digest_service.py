@@ -265,11 +265,18 @@ class DigestService:
 
         if email_summaries:
             digest_lines.append("▸ <b>Emails Summary:</b>")
-            for item in email_summaries:
+            current_len = sum(len(line) + 1 for line in digest_lines)
+            for included, item in enumerate(email_summaries):
                 sender = escape_html(item["sender"])
                 subject = escape_html(item["subject"])
                 summ = escape_html(item["summary"])
-                digest_lines.append(f"• <b>{sender}:</b> {subject}\n  └ <i>{summ}</i>")
+                entry = f"• <b>{sender}:</b> {subject}\n  └ <i>{summ}</i>"
+                if current_len + len(entry) > 3400:
+                    remaining = len(email_summaries) - included
+                    digest_lines.append(f"• <i>...and {remaining} more email(s)</i>")
+                    break
+                digest_lines.append(entry)
+                current_len += len(entry) + 1
             digest_lines.append("")
 
         if total_pending > 0:

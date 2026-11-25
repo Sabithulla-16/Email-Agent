@@ -39,6 +39,37 @@ def escape_html(text: str) -> str:
     return html.escape(text, quote=False)
 
 
+def _truncate_html_safely(text: str, max_len: int, suffix: str) -> str:
+    """Truncate HTML text without leaving unclosed <b>/<i>/<code>/<blockquote> tags."""
+    import re
+
+    cutoff = max(0, max_len - len(suffix))
+    snippet = text[:cutoff]
+    last_nl = snippet.rfind("\n")
+    if last_nl > cutoff // 2:
+        snippet = snippet[:last_nl]
+    # Drop any partial trailing '<...' tag fragment
+    last_lt = snippet.rfind("<")
+    last_gt = snippet.rfind(">")
+    if last_lt > last_gt:
+        snippet = snippet[:last_lt]
+
+    # Balance open/close tags for Telegram's supported subset
+    open_stack: list[str] = []
+    for m in re.finditer(r"<(/?)(b|i|code|blockquote|u|s|pre)(?:\s[^>]*)?>", snippet, re.I):
+        is_close = bool(m.group(1))
+        tag = m.group(2).lower()
+        if not is_close:
+            open_stack.append(tag)
+        elif open_stack and tag in open_stack:
+            # Pop back to matching tag
+            idx = len(open_stack) - 1 - open_stack[::-1].index(tag)
+            open_stack = open_stack[:idx]
+
+    closing_tags = "".join(f"</{tag}>" for tag in reversed(open_stack))
+    return snippet + closing_tags + suffix
+
+
 def _run_curl_api(
     url: str, payload: dict[str, Any] | None = None, method: str = "POST", timeout: float = 15.0
 ) -> tuple[int, dict[str, Any]]:
@@ -167,8 +198,13 @@ class TelegramClient:
                 if not data.get("ok"):
                     if endpoint == "deleteMessage":
                         logger.debug("telegram_delete_message_ignored", data=data)
-                    else:
-                        logger.error("telegram_api_error", data=data)
+                        return None
+                    desc = str(data.get("description", ""))
+                    if "can't parse entities" in desc and payload.get("parse_mode"):
+                        logger.warning("telegram_html_parse_fallback_plain", description=desc)
+                        payload = {k: v for k, v in payload.items() if k != "parse_mode"}
+                        continue
+                    logger.error("telegram_api_error", data=data)
                     return None
 
                 return data.get("result")
@@ -204,7 +240,10 @@ class TelegramClient:
             suffix = (
                 f"\n\n<i>[Message truncated — view in web: {self.settings.FRONTEND_BASE_URL}]</i>"
             )
-            final_text = final_text[: MAX_MESSAGE_LENGTH - len(suffix)] + suffix
+            if parse_mode == "HTML":
+                final_text = _truncate_html_safely(final_text, MAX_MESSAGE_LENGTH, suffix)
+            else:
+                final_text = final_text[: MAX_MESSAGE_LENGTH - len(suffix)] + suffix
 
         payload: dict[str, Any] = {
             "chat_id": chat_id,
@@ -214,7 +253,8 @@ class TelegramClient:
         if reply_markup:
             payload["reply_markup"] = reply_markup
 
-        return await self._post_request("sendMessage", payload, chat_id=chat_id)
+        res = await self._post_request("sendMessage", payload, chat_id=chat_id)
+        return res
 
     async def edit_message_text(
         self,
@@ -230,7 +270,10 @@ class TelegramClient:
             suffix = (
                 f"\n\n<i>[Message truncated — view in web: {self.settings.FRONTEND_BASE_URL}]</i>"
             )
-            final_text = final_text[: MAX_MESSAGE_LENGTH - len(suffix)] + suffix
+            if parse_mode == "HTML":
+                final_text = _truncate_html_safely(final_text, MAX_MESSAGE_LENGTH, suffix)
+            else:
+                final_text = final_text[: MAX_MESSAGE_LENGTH - len(suffix)] + suffix
 
         payload: dict[str, Any] = {
             "chat_id": chat_id,
