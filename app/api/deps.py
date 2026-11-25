@@ -1,5 +1,6 @@
 """FastAPI request dependencies: database repositories, auth, CSRF, and user resolution."""
 
+import hmac
 from typing import Annotated
 
 import structlog
@@ -92,6 +93,5 @@ def verify_csrf(
     cookie_csrf = csrf_token or request.cookies.get("csrf_token")
     header_csrf = x_csrf_token or request.headers.get("X-CSRF-Token")
 
-    if not cookie_csrf or not header_csrf or cookie_csrf != header_csrf:
+    if not cookie_csrf or not header_csrf or not hmac.compare_digest(cookie_csrf, header_csrf):
         raise ForbiddenError("CSRF validation failed. Missing or invalid X-CSRF-Token header.")
-        raise ForbiddenError("CSRF validation failed. Missing or mismatched CSRF token.")

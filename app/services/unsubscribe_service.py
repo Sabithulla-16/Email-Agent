@@ -4,7 +4,7 @@ import ipaddress
 import re
 import socket
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 from uuid import UUID
 
 import httpx
@@ -100,14 +100,27 @@ class UnsubscribeService:
 
         if https_url and is_safe_public_url(https_url):
             try:
-                async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
-                    resp = await client.post(
-                        https_url,
-                        data={"List-Unsubscribe": "One-Click"},
-                    )
-                    if resp.status_code >= 400:
-                        resp = await client.get(https_url)
-                    if resp.status_code < 400:
+                async with httpx.AsyncClient(timeout=8.0, follow_redirects=False) as client:
+                    current_url = https_url
+                    resp: httpx.Response | None = None
+                    for _ in range(4):
+                        resp = await client.post(
+                            current_url,
+                            data={"List-Unsubscribe": "One-Click"},
+                        )
+                        if resp.status_code in (301, 302, 303, 307, 308):
+                            loc = resp.headers.get("location", "")
+                            next_url = urljoin(current_url, loc)
+                            if not is_safe_public_url(next_url):
+                                logger.warning("ssrf_redirect_blocked", target=next_url)
+                                resp = None
+                                break
+                            current_url = next_url
+                            continue
+                        break
+                    if resp is not None and resp.status_code >= 400:
+                        resp = await client.get(current_url)
+                    if resp is not None and resp.status_code < 400:
                         unsub_method = "https"
             except Exception as exc:
                 logger.warning("https_unsubscribe_failed", error=str(exc))

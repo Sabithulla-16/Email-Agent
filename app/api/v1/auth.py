@@ -107,8 +107,21 @@ async def google_auth_callback(
                 msg_to_delete = await get_start_message_id(tg_chat_id)
 
             telegram_repo = TelegramRepo(get_supabase())
-            await telegram_repo.link_chat(user_id=user.id, chat_id=tg_chat_id)
-            tg_client = TelegramClient(telegram_repo=telegram_repo, settings=settings)
+            existing_link = await telegram_repo.get_link_by_chat_id(tg_chat_id)
+            if (
+                existing_link
+                and existing_link.is_active
+                and str(existing_link.user_id) != str(user.id)
+            ):
+                logger.warning(
+                    "telegram_chat_hijack_prevented",
+                    chat_id=tg_chat_id,
+                    existing_user=str(existing_link.user_id),
+                    attempted_user=str(user.id),
+                )
+            else:
+                await telegram_repo.link_chat(user_id=user.id, chat_id=tg_chat_id)
+                tg_client = TelegramClient(telegram_repo=telegram_repo, settings=settings)
 
             # Delete the previous "Connect Gmail" message to keep chat pristine
             if msg_to_delete:
@@ -324,7 +337,32 @@ async def google_auth_callback(
     }
 
 
-@router.post("/auth/logout")
+def _sanitize_prefs_for_client(prefs: dict[str, Any] | None) -> dict[str, Any]:
+    """Strip internal/encrypted secrets from user.prefs before returning to API clients."""
+    if not prefs:
+        return {}
+    return {k: v for k, v in prefs.items() if k != "groq_api_key_encrypted"}
+
+
+class UserPrefsPayload(BaseModel):
+    tone: str | None = Field(default=None, max_length=32)
+    signature: str | None = Field(default=None, max_length=1000)
+    language: str | None = Field(default=None, max_length=16)
+    voice_briefing: bool | None = None
+    voice_name: str | None = Field(default=None, max_length=64)
+
+
+class UserPreferencesUpdate(BaseModel):
+    """Strict allowlist of client-editable profile & preference fields."""
+
+    name: str | None = Field(default=None, max_length=120)
+    timezone: str | None = Field(default=None, max_length=64)
+    digest_time: str | None = Field(default=None, max_length=16)
+    locale: str | None = Field(default=None, max_length=16)
+    prefs: UserPrefsPayload | None = None
+
+
+@router.post("/auth/logout", dependencies=[Depends(verify_csrf)])
 async def logout(
     response: Response,
     auth_service: Annotated[AuthService, Depends(get_auth_service)],
@@ -351,7 +389,7 @@ async def get_current_user_profile(
         "timezone": current_user.timezone,
         "digest_time": str(current_user.digest_time),
         "locale": current_user.locale,
-        "prefs": current_user.prefs,
+        "prefs": _sanitize_prefs_for_client(current_user.prefs),
         "feature_flags": current_user.feature_flags,
         "next_digest_at": (
             current_user.next_digest_at.isoformat() if current_user.next_digest_at else None
@@ -362,15 +400,27 @@ async def get_current_user_profile(
 
 @router.patch("/me/preferences", dependencies=[Depends(verify_csrf)])
 async def update_user_preferences(
-    update_data: UserUpdate,
+    update_data: UserPreferencesUpdate,
     current_user: Annotated[UserRow, Depends(get_current_user)],
     user_repo: Annotated[UserRepo, Depends(get_user_repo)],
 ) -> dict[str, Any]:
     """Update user preferences (tone, signature, timezone, digest time, etc.)."""
-    updated_user = await user_repo.update_user(current_user.id, update_data)
+    merged_prefs: dict[str, Any] | None = None
+    if update_data.prefs is not None:
+        merged_prefs = dict(current_user.prefs or {})
+        merged_prefs.update(update_data.prefs.model_dump(exclude_none=True))
+
+    safe_update = UserUpdate(
+        name=update_data.name,
+        timezone=update_data.timezone,
+        digest_time=update_data.digest_time,
+        locale=update_data.locale,
+        prefs=merged_prefs,
+    )
+    updated_user = await user_repo.update_user(current_user.id, safe_update)
     return {
         "status": "updated",
-        "prefs": updated_user.prefs,
+        "prefs": _sanitize_prefs_for_client(updated_user.prefs),
         "timezone": updated_user.timezone,
         "digest_time": str(updated_user.digest_time),
     }
