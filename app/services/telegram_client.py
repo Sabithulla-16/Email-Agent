@@ -165,7 +165,10 @@ class TelegramClient:
                     continue
 
                 if not data.get("ok"):
-                    logger.error("telegram_api_error", data=data)
+                    if endpoint == "deleteMessage":
+                        logger.debug("telegram_delete_message_ignored", data=data)
+                    else:
+                        logger.error("telegram_api_error", data=data)
                     return None
 
                 return data.get("result")

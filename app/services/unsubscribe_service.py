@@ -157,6 +157,14 @@ class UnsubscribeService:
                     break
                 logger.debug("archive_message_skipped", gmail_msg_id=gm_id, error=err_str)
 
+        if (archived_count > 0 or unsub_method != "none") and hasattr(
+            self.email_repo, "clear_list_unsubscribe"
+        ):
+            try:
+                await self.email_repo.clear_list_unsubscribe(user_id, list(msg_ids))
+            except Exception as exc:
+                logger.debug("clear_list_unsubscribe_failed", error=str(exc))
+
         return {
             "status": "success",
             "sender": email.sender,
