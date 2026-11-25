@@ -200,9 +200,7 @@ async def test_telegram_schedule_3_step_flow():
     assert chat_id in _PENDING_SCHEDULE_STATES
 
     # Step 2: user sends content -> asks for recipient
-    await svc._handle_message(
-        {"chat": {"id": chat_id}, "text": "Remind him about tomorrow's demo"}
-    )
+    await svc._handle_message({"chat": {"id": chat_id}, "text": "Remind him about tomorrow's demo"})
     assert _PENDING_SCHEDULE_STATES[chat_id]["content"] == "Remind him about tomorrow's demo"
 
     # Step 3: user sends recipient -> asks for timing
@@ -320,4 +318,3 @@ async def test_schedule_preview_revise_accept_and_manage_edit():
         await svc._handle_message({"chat": {"id": chat_id}, "text": "new@corp.com"})
         assert chat_id not in _PENDING_SCHEDULE_EDIT_STATES
         mock_update.assert_awaited_once()
-

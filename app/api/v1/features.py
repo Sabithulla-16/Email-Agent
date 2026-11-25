@@ -130,9 +130,7 @@ async def decision_radar(
 ) -> dict[str, Any]:
     """Return Decision & Commitment Radar for the current user."""
     check_feature_flag(current_user, "followups")
-    return await FollowupService().get_radar_summary(
-        user_id=current_user.id, email_repo=email_repo
-    )
+    return await FollowupService().get_radar_summary(user_id=current_user.id, email_repo=email_repo)
 
 
 # -----------------------------------------------------------------------------

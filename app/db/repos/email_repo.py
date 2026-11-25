@@ -235,9 +235,7 @@ class EmailRepo(BaseRepo):
         data = await self._execute_with_retry(_query)
         return [self._decrypt_email_row(item) for item in data]
 
-    async def clear_list_unsubscribe(
-        self, user_id: UUID | str, gmail_msg_ids: list[str]
-    ) -> None:
+    async def clear_list_unsubscribe(self, user_id: UUID | str, gmail_msg_ids: list[str]) -> None:
         """Clear list_unsubscribe on archived/unsubscribed emails so they leave /unsubscribe."""
         if not gmail_msg_ids:
             return

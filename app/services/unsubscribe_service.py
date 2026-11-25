@@ -64,9 +64,7 @@ class UnsubscribeService:
         self.email_repo = email_repo
         self.auth_service = auth_service
 
-    async def list_candidates(
-        self, user_id: UUID | str, limit: int = 5
-    ) -> list[dict[str, Any]]:
+    async def list_candidates(self, user_id: UUID | str, limit: int = 5) -> list[dict[str, Any]]:
         """Group recent unsubscribable emails by sender_email for this user."""
         rows = await self.email_repo.list_newsletters_by_user(user_id=user_id, limit=40)
         grouped: dict[str, dict[str, Any]] = {}

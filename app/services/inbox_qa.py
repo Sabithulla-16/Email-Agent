@@ -172,7 +172,5 @@ class InboxQAService:
     ) -> list[dict[str, Any]]:
         """Encrypted-safe semantic/keyword search over a single user's email archive."""
         if hasattr(self.email_repo, "search_decrypted"):
-            return await self.email_repo.search_decrypted(
-                user_id=user_id, query=query, limit=limit
-            )
+            return await self.email_repo.search_decrypted(user_id=user_id, query=query, limit=limit)
         return []

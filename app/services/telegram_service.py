@@ -243,9 +243,7 @@ class TelegramService:
                 auth_svc = self.auth_service or AuthService(
                     user_repo=self.user_repo, settings=self.settings
                 )
-                unsub_svc = UnsubscribeService(
-                    email_repo=self.email_repo, auth_service=auth_svc
-                )
+                unsub_svc = UnsubscribeService(email_repo=self.email_repo, auth_service=auth_svc)
                 res = await unsub_svc.unsubscribe_and_archive(
                     user_id=link.user_id, email_id=target_id
                 )
@@ -254,11 +252,7 @@ class TelegramService:
                 status_note = (
                     "Unsubscribed &amp; archived"
                     if res.get("unsubscribed") and archived > 0
-                    else (
-                        "Unsubscribed"
-                        if res.get("unsubscribed")
-                        else "Archived from inbox"
-                    )
+                    else ("Unsubscribed" if res.get("unsubscribed") else "Archived from inbox")
                 )
                 msg = f"✓ <b>{status_note}:</b> {sender_lbl} ({archived} email(s) archived)."
                 unsub_markup: dict[str, Any] | None = None
@@ -270,9 +264,7 @@ class TelegramService:
                         "Tap below once to reconnect Gmail with archive access:</i>"
                     )
                     unsub_markup = {
-                        "inline_keyboard": [
-                            [{"text": "⟡ Reconnect Gmail", "url": reconnect_url}]
-                        ]
+                        "inline_keyboard": [[{"text": "⟡ Reconnect Gmail", "url": reconnect_url}]]
                     }
                 await self.telegram_client.send_message(
                     chat_id=chat_id, text=msg, reply_markup=unsub_markup
@@ -1168,9 +1160,7 @@ class TelegramService:
                 auth_svc = self.auth_service or AuthService(
                     user_repo=self.user_repo, settings=self.settings
                 )
-                unsub_svc = UnsubscribeService(
-                    email_repo=self.email_repo, auth_service=auth_svc
-                )
+                unsub_svc = UnsubscribeService(email_repo=self.email_repo, auth_service=auth_svc)
                 candidates = await unsub_svc.list_candidates(user_id=user_id, limit=5)
                 if not candidates:
                     await self.telegram_client.send_message(
@@ -1291,12 +1281,9 @@ class TelegramService:
                     marker = " ✓" if v_id == current_voice else ""
                     lines.append(f"• <code>/voice {key}</code> — {desc}{marker}")
                 lines.append(
-                    "\n<i>Toggle with</i> <code>/voice on</code> "
-                    "<i>or</i> <code>/voice off</code>."
+                    "\n<i>Toggle with</i> <code>/voice on</code> <i>or</i> <code>/voice off</code>."
                 )
-                await self.telegram_client.send_message(
-                    chat_id=chat_id, text="\n".join(lines)
-                )
+                await self.telegram_client.send_message(chat_id=chat_id, text="\n".join(lines))
                 return
 
             if arg in VOICE_PRESETS:
@@ -1646,9 +1633,7 @@ class TelegramService:
                 text=f"✕ <b>Could not compose scheduled email:</b> {escape_html(str(exc))}",
             )
 
-    async def _render_schedule_preview(
-        self, chat_id: int, message_id: int | None = None
-    ) -> None:
+    async def _render_schedule_preview(self, chat_id: int, message_id: int | None = None) -> None:
         """Render or update the pre-schedule preview card with Accept/Revise/Cancel/Tone."""
         import zoneinfo
 
@@ -1823,9 +1808,7 @@ class TelegramService:
             with contextlib.suppress(Exception):
                 user_groq_key = await self.auth_service.get_user_groq_api_key(user_id)
 
-        sched_svc = ScheduledEmailService(
-            settings=self.settings, groq_service=self.groq_service
-        )
+        sched_svc = ScheduledEmailService(settings=self.settings, groq_service=self.groq_service)
         new_subj, new_body = await sched_svc.revise_subject_and_body(
             subject=state["subject"],
             body=state["body"],
@@ -1847,9 +1830,7 @@ class TelegramService:
         user_id = edit_state["user_id"]
         sched_id = edit_state["scheduled_id"]
         field = edit_state["field"]
-        sched_svc = ScheduledEmailService(
-            settings=self.settings, groq_service=self.groq_service
-        )
+        sched_svc = ScheduledEmailService(settings=self.settings, groq_service=self.groq_service)
 
         if field == "recipient":
             found_email = extract_email_address(text)

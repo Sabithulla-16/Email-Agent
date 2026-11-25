@@ -315,9 +315,7 @@ class ScheduledEmailService:
         )
         return [self._decrypt_row(dict(cast(dict[str, Any], r))) for r in (res.data or [])]
 
-    async def cancel_scheduled_email(
-        self, user_id: UUID | str, scheduled_id: UUID | str
-    ) -> bool:
+    async def cancel_scheduled_email(self, user_id: UUID | str, scheduled_id: UUID | str) -> bool:
         """Cancel a pending scheduled email owned by user_id."""
         res = await (
             self.client.table("scheduled_emails")
