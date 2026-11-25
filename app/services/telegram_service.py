@@ -1054,6 +1054,7 @@ class TelegramService:
                     email_repo=self.email_repo,
                     draft_repo=self.draft_repo,
                     telegram_repo=self.telegram_repo,
+                    telegram_client=self.telegram_client,
                     auth_service=self.auth_service,
                     settings=self.settings,
                 )

@@ -341,9 +341,7 @@ class DigestService:
             )
 
             should_send_voice = (
-                include_voice
-                if include_voice is not None
-                else (not is_incremental and is_voice_enabled(user.prefs))
+                include_voice if include_voice is not None else is_voice_enabled(user.prefs)
             )
             voice_sent = False
             send_voice_fn = getattr(self.telegram_client, "send_voice", None)
