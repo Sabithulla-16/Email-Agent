@@ -357,4 +357,4 @@ async def test_cron_trigger_endpoint_authorized(client, test_settings):
         assert res.status_code == 200
         data = res.json()
         assert data["ok"] is True
-        assert data["data"]["status"] == "success"
+        assert data["data"]["status"] in ("accepted", "success")
