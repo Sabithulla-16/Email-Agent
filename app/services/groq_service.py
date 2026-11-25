@@ -126,7 +126,6 @@ class GroqService:
             self.settings.GROQ_FAST_MODEL,
             getattr(self.settings, "GROQ_FALLBACK_MODEL", "qwen/qwen3.8-27b"),
             self.settings.GROQ_DRAFT_MODEL,
-            "llama-3.3-70b-versatile",
         ]
         # Deduplicate while preserving order
         seen_models: set[str] = set()
@@ -323,7 +322,6 @@ class GroqService:
         default_fallbacks = [
             getattr(self.settings, "GROQ_FALLBACK_MODEL", "qwen/qwen3.8-27b"),
             self.settings.GROQ_DRAFT_MODEL,
-            "llama-3.3-70b-versatile",
         ]
         fallbacks = fallback_models or default_fallbacks
 
