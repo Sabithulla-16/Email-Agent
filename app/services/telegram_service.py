@@ -289,7 +289,7 @@ class TelegramService:
         if not consumed:
             await self.telegram_client.send_message(
                 chat_id=chat_id,
-                text="⚠️ <i>This action button has expired or was already used.</i>",
+                text="! <i>This action button has expired or was already used.</i>",
             )
             return
 
@@ -304,7 +304,7 @@ class TelegramService:
                     await self.telegram_client.edit_message_text(
                         chat_id=chat_id,
                         message_id=message_id,
-                        text="✅ <b>Draft Approved and Sent via Gmail!</b>",
+                        text="✓ <b>Draft Approved and Sent via Gmail!</b>",
                         reply_markup=None,
                     )
 
@@ -314,7 +314,7 @@ class TelegramService:
                     await self.telegram_client.edit_message_text(
                         chat_id=chat_id,
                         message_id=message_id,
-                        text="❌ <b>Draft Rejected and Cancelled.</b>",
+                        text="✕ <b>Draft Rejected and Cancelled.</b>",
                         reply_markup=None,
                     )
 
@@ -349,7 +349,7 @@ class TelegramService:
                 )
                 await self.telegram_client.send_message(
                     chat_id=chat_id,
-                    text="✍️ <b>Please reply with revision instructions</b> (or send a voice note).",
+                    text="✎ <b>Please reply with revision instructions</b> (or send a voice note).",
                 )
 
         except Exception as exc:
@@ -361,7 +361,7 @@ class TelegramService:
             )
             await self.telegram_client.send_message(
                 chat_id=chat_id,
-                text=f"⚠️ <b>Action failed:</b> {escape_html(str(exc))}",
+                text=f"! <b>Action failed:</b> {escape_html(str(exc))}",
             )
 
     # -------------------------------------------------------------------------
@@ -409,7 +409,7 @@ class TelegramService:
                     await self.telegram_client.send_message(
                         chat_id=chat_id,
                         text=(
-                            "⚠️ <i>Please enter a valid recipient email address "
+                            "! <i>Please enter a valid recipient email address "
                             "(e.g. <code>colleague@example.com</code>). "
                             "Or send /cancel to abort.</i>"
                         ),
@@ -535,7 +535,7 @@ class TelegramService:
         """Answer natural language question about user's inbox using Groq LLM."""
         status_msg = await self.telegram_client.send_message(
             chat_id=chat_id,
-            text="🔍 <i>Searching your emails...</i>",
+            text="▸ <i>Searching your emails...</i>",
         )
         msg_id = status_msg.get("message_id") if isinstance(status_msg, dict) else None
         try:
@@ -548,7 +548,7 @@ class TelegramService:
             answer = result.get("answer", "")
             citations = result.get("citations", [])
 
-            resp_text = f"💡 <b>Answer:</b>\n\n{escape_html(answer)}"
+            resp_text = f"◈ <b>Answer:</b>\n\n{escape_html(answer)}"
             if citations:
                 resp_text += "\n\n<b>Sources:</b>"
                 for c in citations[:3]:
@@ -569,7 +569,7 @@ class TelegramService:
             logger.error("telegram_qa_failed", query=query, error=str(exc))
             await self.telegram_client.send_message(
                 chat_id=chat_id,
-                text=f"⚠️ <b>Could not answer query:</b> {escape_html(str(exc))}",
+                text=f"! <b>Could not answer query:</b> {escape_html(str(exc))}",
             )
 
     # -------------------------------------------------------------------------
@@ -596,8 +596,8 @@ class TelegramService:
                         await self.telegram_client.send_message(
                             chat_id=chat_id,
                             text=(
-                                "🎉 <b>Account successfully linked!</b>\n\n"
-                                "🔑 <b>Final Step: Set your Groq API Key</b>\n"
+                                "✦ <b>Account successfully linked!</b>\n\n"
+                                "▸ <b>Final Step: Set your Groq API Key</b>\n"
                                 "To enable AI email analysis and reply drafts on your own quota, "
                                 "enter your Groq API key:\n\n"
                                 "<code>/setkey gsk_your_key_here</code>\n\n"
@@ -610,7 +610,7 @@ class TelegramService:
                         await self.telegram_client.send_message(
                             chat_id=chat_id,
                             text=(
-                                "🎉 <b>Account successfully linked!</b>\n\n"
+                                "✦ <b>Account successfully linked!</b>\n\n"
                                 "You will receive email summaries and draft approvals here.\n"
                                 "Type /help to view all bot commands."
                             ),
@@ -618,7 +618,7 @@ class TelegramService:
                 else:
                     await self.telegram_client.send_message(
                         chat_id=chat_id,
-                        text="❌ <b>Link expired or invalid.</b> Please generate a new link.",
+                        text="✕ <b>Link expired or invalid.</b> Please generate a new link.",
                     )
             elif link and getattr(link, "is_active", False) is True:
                 user = await self.user_repo.get_by_id(link.user_id)
@@ -626,14 +626,14 @@ class TelegramService:
                 user_name = user.name if user and user.name else "there"
                 has_key = bool(user and user.prefs and user.prefs.get("groq_api_key_encrypted"))
                 key_line = (
-                    "• 🔑 /setkey — Set personal Groq API key\n"
+                    "• ▸ /setkey — Set personal Groq API key\n"
                     if not has_key
-                    else "• 🔑 /mykey — View Groq API key status\n"
+                    else "• ▸ /mykey — View Groq API key status\n"
                 )
                 await self.telegram_client.send_message(
                     chat_id=chat_id,
                     text=(
-                        f"👋 <b>Welcome back, {escape_html(user_name)}!</b>\n\n"
+                        f"✦ <b>Welcome back, {escape_html(user_name)}!</b>\n\n"
                         f"Your Telegram is already linked to "
                         f"<code>{escape_html(user_email)}</code>.\n\n"
                         f"<b>Quick Actions:</b>\n"
@@ -662,7 +662,7 @@ class TelegramService:
                 sent_msg = await self.telegram_client.send_message(
                     chat_id=chat_id,
                     text=(
-                        "👋 <b>Welcome to Email Agent!</b>\n\n"
+                        "✦ <b>Welcome to Email Agent!</b>\n\n"
                         "I am your personal AI email assistant. I summarize unread emails, "
                         "draft replies in your voice, and send only with your approval.\n\n"
                         "To get started, please connect your Gmail account:"
@@ -677,7 +677,7 @@ class TelegramService:
         if not link:
             await self.telegram_client.send_message(
                 chat_id=chat_id,
-                text="⚠️ Your Telegram account is not linked. Please connect via the web app.",
+                text="! Your Telegram account is not linked. Please connect via the web app.",
             )
             return
 
@@ -688,7 +688,7 @@ class TelegramService:
                 await self.telegram_client.send_message(
                     chat_id=chat_id,
                     text=(
-                        "ℹ️ <b>How to set your Groq API key:</b>\n\n"
+                        "› <b>How to set your Groq API key:</b>\n\n"
                         "Send: <code>/setkey gsk_your_groq_key_here</code>\n\n"
                         "<i>(You can get a free key in 30 seconds at https://console.groq.com/keys)</i>\n"
                         "<i>Your key is encrypted with AES-256 and your message is "
@@ -700,7 +700,7 @@ class TelegramService:
             raw_key = parts[1].strip()
             status_msg = await self.telegram_client.send_message(
                 chat_id=chat_id,
-                text="🔄 <i>Validating and securely encrypting your Groq API key...</i>",
+                text="◷ <i>Validating and securely encrypting your Groq API key...</i>",
             )
             status_id = status_msg.get("message_id") if isinstance(status_msg, dict) else None
 
@@ -718,7 +718,7 @@ class TelegramService:
                 await self.telegram_client.send_message(
                     chat_id=chat_id,
                     text=(
-                        "✅ <b>Groq API Key Configured Successfully!</b>\n\n"
+                        "✓ <b>Groq API Key Configured Successfully!</b>\n\n"
                         f"• Key: <code>{masked}</code>\n"
                         f"• Encryption: <b>AES-256-GCM</b>\n\n"
                         "All email summaries, triage analysis, and reply drafts will now run "
@@ -733,7 +733,7 @@ class TelegramService:
                     )
                 await self.telegram_client.send_message(
                     chat_id=chat_id,
-                    text=f"❌ <b>Failed to set Groq key:</b> {escape_html(str(exc))}",
+                    text=f"✕ <b>Failed to set Groq key:</b> {escape_html(str(exc))}",
                 )
 
         elif cmd == "/mykey":
@@ -747,7 +747,7 @@ class TelegramService:
                 await self.telegram_client.send_message(
                     chat_id=chat_id,
                     text=(
-                        "🔑 <b>Your Groq API Key:</b>\n\n"
+                        "▸ <b>Your Groq API Key:</b>\n\n"
                         f"• Status: <b>Active</b>\n"
                         f"• Key: <code>{masked}</code>\n\n"
                         "To update it, send: <code>/setkey gsk_...</code>\n"
@@ -758,7 +758,7 @@ class TelegramService:
                 await self.telegram_client.send_message(
                     chat_id=chat_id,
                     text=(
-                        "ℹ️ <b>No Personal Groq API Key Configured</b>\n\n"
+                        "› <b>No Personal Groq API Key Configured</b>\n\n"
                         "Currently using default system tier.\n\n"
                         "To connect your own dedicated Groq quota, send:\n"
                         "<code>/setkey gsk_your_key_here</code>\n\n"
@@ -773,14 +773,14 @@ class TelegramService:
             await auth_svc.remove_user_groq_api_key(user_id)
             await self.telegram_client.send_message(
                 chat_id=chat_id,
-                text="🗑️ <b>Personal Groq API Key Removed.</b> Reverted to system default.",
+                text="✕ <b>Personal Groq API Key Removed.</b> Reverted to system default.",
             )
 
         elif cmd == "/disconnect":
             await self.telegram_repo.deactivate_chat(chat_id)
             await self.telegram_client.send_message(
                 chat_id=chat_id,
-                text="🔌 <b>Telegram disconnected.</b> Notifications have been stopped.",
+                text="✕ <b>Telegram disconnected.</b> Notifications have been stopped.",
             )
 
         elif cmd == "/reconnect":
@@ -789,7 +789,7 @@ class TelegramService:
             await self.telegram_client.send_message(
                 chat_id=chat_id,
                 text=(
-                    "🔑 <b>Reconnect Gmail</b>\n\n"
+                    "▸ <b>Reconnect Gmail</b>\n\n"
                     "Tap the button below to re-authorize your Gmail account and grant "
                     "updated permissions (including archiving):"
                 ),
@@ -804,7 +804,7 @@ class TelegramService:
                 await self.telegram_client.send_message(
                     chat_id=chat_id,
                     text=(
-                        "✍️ <b>Compose a New Email Draft</b>\n\n"
+                        "✎ <b>Compose a New Email Draft</b>\n\n"
                         "Give me the recipient and your rough notes, and I will compose a "
                         "polished draft for your review.\n\n"
                         "<b>Format:</b>\n"
@@ -828,7 +828,7 @@ class TelegramService:
                 await self.telegram_client.send_message(
                     chat_id=chat_id,
                     text=(
-                        "📧 <b>Recipient Needed</b>\n\n"
+                        "▸ <b>Recipient Needed</b>\n\n"
                         "Who should I send this email to?\n\n"
                         "Please reply with the recipient's email address "
                         "(e.g. <code>colleague@example.com</code>):"
@@ -852,7 +852,7 @@ class TelegramService:
                 await self.telegram_client.send_message(
                     chat_id=chat_id,
                     text=(
-                        f"✍️ <b>What would you like to say to "
+                        f"✎ <b>What would you like to say to "
                         f"<code>{escape_html(recipient)}</code>?</b>\n\n"
                         "Reply here with your rough notes or instructions, "
                         "and I will draft the email for you."
@@ -922,7 +922,7 @@ class TelegramService:
             )
             if not drafts:
                 await self.telegram_client.send_message(
-                    chat_id=chat_id, text="✨ No pending drafts waiting for approval!"
+                    chat_id=chat_id, text="✓ No pending drafts waiting for approval!"
                 )
                 return
 
@@ -945,7 +945,7 @@ class TelegramService:
             ]
             if not urgent:
                 await self.telegram_client.send_message(
-                    chat_id=chat_id, text="🟢 No urgent unread emails detected."
+                    chat_id=chat_id, text="✓ No urgent unread emails detected."
                 )
             else:
                 lines = [
@@ -953,7 +953,7 @@ class TelegramService:
                 ]
                 await self.telegram_client.send_message(
                     chat_id=chat_id,
-                    text="🚨 <b>Urgent Emails:</b>\n\n" + "\n".join(lines),
+                    text="! <b>Urgent Emails:</b>\n\n" + "\n".join(lines),
                 )
 
         elif cmd == "/snooze":
@@ -965,7 +965,7 @@ class TelegramService:
             time_str = snooze_until.strftime("%H:%M UTC")
             await self.telegram_client.send_message(
                 chat_id=chat_id,
-                text=f"🔕 Notifications snoozed for {hours} hours (until {time_str}).",
+                text=f"◷ Notifications snoozed for {hours} hours (until {time_str}).",
             )
 
         elif cmd == "/mute":
@@ -974,7 +974,7 @@ class TelegramService:
                 user_id, {"snoozed_until": snooze_until.isoformat()}
             )
             await self.telegram_client.send_message(
-                chat_id=chat_id, text="🔕 Notifications muted for 24 hours."
+                chat_id=chat_id, text="◷ Notifications muted for 24 hours."
             )
 
         elif cmd == "/settings":
@@ -1001,7 +1001,7 @@ class TelegramService:
                 await self.telegram_client.send_message(
                     chat_id=chat_id,
                     text=(
-                        "ℹ️ <i>Please provide a question. Example:</i> "
+                        "› <i>Please provide a question. Example:</i> "
                         "<code>/ask when is my meeting with Alex?</code>"
                     ),
                 )
@@ -1011,7 +1011,7 @@ class TelegramService:
         elif cmd == "/sync":
             status_msg = await self.telegram_client.send_message(
                 chat_id=chat_id,
-                text="🔄 <i>Synchronizing your inbox from Gmail...</i>",
+                text="◷ <i>Synchronizing your inbox from Gmail...</i>",
             )
             msg_id = status_msg.get("message_id") if isinstance(status_msg, dict) else None
             try:
@@ -1022,7 +1022,7 @@ class TelegramService:
                     await self.telegram_client.delete_message(chat_id=chat_id, message_id=msg_id)
 
                 lines = [
-                    "✅ <b>Inbox Sync Complete!</b>\n",
+                    "✓ <b>Inbox Sync Complete!</b>\n",
                     f"• New emails synced: <b>{new_synced}</b>",
                     f"• Reply drafts ready: <b>{drafts_created}</b>",
                 ]
@@ -1039,13 +1039,13 @@ class TelegramService:
                 logger.error("telegram_sync_command_failed", error=str(exc))
                 await self.telegram_client.send_message(
                     chat_id=chat_id,
-                    text=f"⚠️ Sync failed: {escape_html(str(exc))}",
+                    text=f"! Sync failed: {escape_html(str(exc))}",
                 )
 
         elif cmd == "/digest":
             status_msg = await self.telegram_client.send_message(
                 chat_id=chat_id,
-                text="📊 <i>Compiling your daily email digest...</i>",
+                text="◈ <i>Compiling your daily email digest...</i>",
             )
             msg_id = status_msg.get("message_id") if isinstance(status_msg, dict) else None
             try:
@@ -1063,7 +1063,7 @@ class TelegramService:
                 if res.get("status") == "skipped":
                     await self.telegram_client.send_message(
                         chat_id=chat_id,
-                        text=f"ℹ️ Digest skipped: {res.get('reason', 'no recent activity')}",
+                        text=f"› Digest skipped: {res.get('reason', 'no recent activity')}",
                     )
             except Exception as exc:
                 if msg_id:
@@ -1071,7 +1071,7 @@ class TelegramService:
                 logger.error("telegram_digest_command_failed", error=str(exc))
                 await self.telegram_client.send_message(
                     chat_id=chat_id,
-                    text=f"⚠️ Digest failed: {escape_html(str(exc))}",
+                    text=f"! Digest failed: {escape_html(str(exc))}",
                 )
 
         elif cmd in ("/followups", "/commitments"):
@@ -1081,7 +1081,7 @@ class TelegramService:
                 if not commitments:
                     await self.telegram_client.send_message(
                         chat_id=chat_id,
-                        text="✨ No open promises or commitments detected in recent sent emails!",
+                        text="✓ No open promises or commitments detected in recent sent emails!",
                     )
                 else:
                     lines = []
@@ -1091,13 +1091,13 @@ class TelegramService:
                         lines.append(f"• <b>{escape_html(promise)}</b> (Due: {due})")
                     await self.telegram_client.send_message(
                         chat_id=chat_id,
-                        text="📋 <b>Tracked Commitments & Promises:</b>\n\n" + "\n".join(lines),
+                        text="◈ <b>Tracked Commitments & Promises:</b>\n\n" + "\n".join(lines),
                     )
             except Exception as exc:
                 logger.error("telegram_followups_command_failed", error=str(exc))
                 await self.telegram_client.send_message(
                     chat_id=chat_id,
-                    text=f"⚠️ Could not list commitments: {escape_html(str(exc))}",
+                    text=f"! Could not list commitments: {escape_html(str(exc))}",
                 )
 
         elif cmd == "/radar":
@@ -1111,8 +1111,8 @@ class TelegramService:
                     await self.telegram_client.send_message(
                         chat_id=chat_id,
                         text=(
-                            "🎯 <b>Decision &amp; Commitment Radar</b>\n\n"
-                            "✨ All clear! No pending replies or open commitments."
+                            "▪ <b>Decision &amp; Commitment Radar</b>\n\n"
+                            "✓ All clear! No pending replies or open commitments."
                         ),
                     )
                     return
@@ -1152,7 +1152,7 @@ class TelegramService:
                 logger.error("telegram_radar_failed", error=str(exc))
                 await self.telegram_client.send_message(
                     chat_id=chat_id,
-                    text=f"⚠️ Could not load radar: {escape_html(str(exc))}",
+                    text=f"! Could not load radar: {escape_html(str(exc))}",
                 )
 
         elif cmd == "/unsubscribe":
@@ -1165,7 +1165,7 @@ class TelegramService:
                 if not candidates:
                     await self.telegram_client.send_message(
                         chat_id=chat_id,
-                        text="✨ No newsletter or promo senders with unsubscribe links found.",
+                        text="✓ No newsletter or promo senders with unsubscribe links found.",
                     )
                     return
 
@@ -1194,7 +1194,7 @@ class TelegramService:
                 logger.error("telegram_unsubscribe_failed", error=str(exc))
                 await self.telegram_client.send_message(
                     chat_id=chat_id,
-                    text=f"⚠️ Could not list newsletters: {escape_html(str(exc))}",
+                    text=f"! Could not list newsletters: {escape_html(str(exc))}",
                 )
 
         elif cmd == "/find":
@@ -1202,12 +1202,12 @@ class TelegramService:
             if not query:
                 await self.telegram_client.send_message(
                     chat_id=chat_id,
-                    text="ℹ️ <i>Usage:</i> <code>/find flight ticket</code>",
+                    text="› <i>Usage:</i> <code>/find flight ticket</code>",
                 )
                 return
             status_msg = await self.telegram_client.send_message(
                 chat_id=chat_id,
-                text="🔍 <i>Searching your encrypted emails...</i>",
+                text="▸ <i>Searching your encrypted emails...</i>",
             )
             msg_id = status_msg.get("message_id") if isinstance(status_msg, dict) else None
             try:
@@ -1225,10 +1225,10 @@ class TelegramService:
                 if not hits:
                     await self.telegram_client.send_message(
                         chat_id=chat_id,
-                        text=f"🔍 No emails found matching <b>{escape_html(query)}</b>.",
+                        text=f"▸ No emails found matching <b>{escape_html(query)}</b>.",
                     )
                     return
-                lines = [f'🔍 <b>Search Results for "{escape_html(query)}":</b>\n']
+                lines = [f'▸ <b>Search Results for "{escape_html(query)}":</b>\n']
                 for h in hits:
                     date_part = (h.get("received_at") or "")[:10]
                     lines.append(
@@ -1249,7 +1249,7 @@ class TelegramService:
                 logger.error("telegram_find_failed", query=query, error=str(exc))
                 await self.telegram_client.send_message(
                     chat_id=chat_id,
-                    text=f"⚠️ <b>Search failed:</b> {escape_html(str(exc))}",
+                    text=f"! <b>Search failed:</b> {escape_html(str(exc))}",
                 )
 
         elif cmd == "/voice":
@@ -1264,7 +1264,7 @@ class TelegramService:
                 state_lbl = "enabled ✓" if enabled else "disabled ✕"
                 await self.telegram_client.send_message(
                     chat_id=chat_id,
-                    text=f"◉ Morning voice briefing is now <b>{state_lbl}</b> for your account.",
+                    text=f"▸ Morning voice briefing is now <b>{state_lbl}</b> for your account.",
                 )
                 return
 
@@ -1272,7 +1272,7 @@ class TelegramService:
                 current_voice = resolve_voice_name(user_prefs)
                 enabled = is_voice_enabled(user_prefs)
                 lines = [
-                    "◉ <b>Voice Briefing Settings</b>\n",
+                    "▸ <b>Voice Briefing Settings</b>\n",
                     f"• Status: <b>{'Enabled' if enabled else 'Disabled'}</b>",
                     f"• Active Voice: <code>{escape_html(current_voice)}</code>\n",
                     "▸ <b>Available Presets:</b>",
@@ -1292,7 +1292,7 @@ class TelegramService:
                 await self.user_repo.update_user(user_id, UserUpdate(prefs=user_prefs))
                 await self.telegram_client.send_message(
                     chat_id=chat_id,
-                    text=f"◉ Voice updated to <b>{desc}</b> (<code>{v_id}</code>).",
+                    text=f"▸ Voice updated to <b>{desc}</b> (<code>{v_id}</code>).",
                 )
                 return
 
@@ -1300,7 +1300,7 @@ class TelegramService:
                 await self.telegram_client.send_message(
                     chat_id=chat_id,
                     text=(
-                        "⚠️ Unknown voice option. Use <code>/voice list</code> to see available "
+                        "! Unknown voice option. Use <code>/voice list</code> to see available "
                         "voices, <code>/voice on|off</code>, or <code>/voice</code> to play now."
                     ),
                 )
@@ -1309,7 +1309,7 @@ class TelegramService:
             # No args: send BOTH text digest and voice briefing right now
             status_msg = await self.telegram_client.send_message(
                 chat_id=chat_id,
-                text="🎙️ <i>Preparing your text + voice briefing...</i>",
+                text="▸ <i>Preparing your text + voice briefing...</i>",
             )
             msg_id = status_msg.get("message_id") if isinstance(status_msg, dict) else None
             try:
@@ -1331,6 +1331,50 @@ class TelegramService:
                         await self.telegram_client.delete_message(
                             chat_id=chat_id, message_id=int(msg_id)
                         )
+
+        elif cmd == "/signature":
+            raw_sig = command_text[len(cmd) :].strip()
+            user = await self.user_repo.get_by_id(user_id)
+            user_prefs = dict(user.prefs) if user and user.prefs else {}
+
+            if not raw_sig:
+                current_sig = str(user_prefs.get("signature") or "").strip()
+                sig_display = (
+                    f"<blockquote>{escape_html(current_sig)}</blockquote>"
+                    if current_sig
+                    else "<i>Not configured</i>"
+                )
+                await self.telegram_client.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        "◈ <b>Email Signature</b>\n\n"
+                        f"• <b>Current:</b>\n{sig_display}\n\n"
+                        "▸ <b>Usage:</b>\n"
+                        "• <code>/signature Best regards, Alex</code> — Set signature\n"
+                        "• <code>/signature clear</code> — Remove signature"
+                    ),
+                )
+                return
+
+            if raw_sig.lower() in ("clear", "off", "remove", "none"):
+                user_prefs["signature"] = ""
+                await self.user_repo.update_user(user_id, UserUpdate(prefs=user_prefs))
+                await self.telegram_client.send_message(
+                    chat_id=chat_id,
+                    text="✓ <b>Email signature cleared.</b>",
+                )
+                return
+
+            user_prefs["signature"] = raw_sig
+            await self.user_repo.update_user(user_id, UserUpdate(prefs=user_prefs))
+            await self.telegram_client.send_message(
+                chat_id=chat_id,
+                text=(
+                    "✓ <b>Email Signature Updated</b>\n\n"
+                    f"<blockquote>{escape_html(raw_sig)}</blockquote>\n\n"
+                    "<i>This signature will be used on all future drafts and scheduled emails.</i>"
+                ),
+            )
 
         elif cmd == "/help":
             await self.telegram_client.send_message(
@@ -1360,6 +1404,7 @@ class TelegramService:
                     "  <i>Options:</i> <code>/voice list</code>, <code>/voice &lt;name&gt;</code>, "
                     "<code>/voice on|off</code>\n\n"
                     "<b>▸ Account &amp; Security</b>\n"
+                    "• <code>/signature &lt;text&gt;</code> — Set or clear your email signature\n"
                     "• <code>/setkey &lt;gsk_...&gt;</code> — Set personal Groq API key\n"
                     "• <code>/mykey</code> / <code>/removekey</code> — Check or remove Groq key\n"
                     "• <code>/snooze &lt;hours&gt;</code> / <code>/mute</code> — Pause alerts\n"
@@ -1383,7 +1428,7 @@ class TelegramService:
         if not link:
             await self.telegram_client.send_message(
                 chat_id=chat_id,
-                text="⚠️ Please link your account first via the web app.",
+                text="! Please link your account first via the web app.",
             )
             return
 
@@ -1391,7 +1436,7 @@ class TelegramService:
         file_path = file_meta.get("file_path") if file_meta else None
         if not file_path:
             await self.telegram_client.send_message(
-                chat_id=chat_id, text="⚠️ Could not retrieve voice audio file."
+                chat_id=chat_id, text="! Could not retrieve voice audio file."
             )
             return
 
@@ -1412,7 +1457,7 @@ class TelegramService:
             esc_tr = escape_html(transcript)
             await self.telegram_client.send_message(
                 chat_id=chat_id,
-                text=f'🎙️ <i>Heard instruction:</i> "{esc_tr}"\n\nApplying revision...',
+                text=f'▸ <i>Heard instruction:</i> "{esc_tr}"\n\nApplying revision...',
             )
             await self._apply_text_revision(
                 chat_id=chat_id,
@@ -1423,7 +1468,7 @@ class TelegramService:
         else:
             await self.telegram_client.send_message(
                 chat_id=chat_id,
-                text=f'🎙️ <b>Transcribed Voice Note:</b>\n\n"{escape_html(transcript)}"',
+                text=f'▸ <b>Transcribed Voice Note:</b>\n\n"{escape_html(transcript)}"',
             )
 
     async def _apply_text_revision(
@@ -1446,7 +1491,7 @@ class TelegramService:
             logger.error("telegram_text_revision_failed", draft_id=str(draft_id), error=str(exc))
             await self.telegram_client.send_message(
                 chat_id=chat_id,
-                text=f"⚠️ Revision failed: {escape_html(str(exc))}",
+                text=f"! Revision failed: {escape_html(str(exc))}",
             )
 
     async def _execute_custom_draft_creation(
@@ -1459,7 +1504,7 @@ class TelegramService:
         """Compose a brand new outbound email draft and present it via the draft pipeline."""
         status_msg = await self.telegram_client.send_message(
             chat_id=chat_id,
-            text=f"✍️ <i>Composing email draft for <code>{escape_html(recipient)}</code>...</i>",
+            text=f"✎ <i>Composing email draft for <code>{escape_html(recipient)}</code>...</i>",
         )
         msg_id = status_msg.get("message_id") if isinstance(status_msg, dict) else None
         try:
@@ -1484,7 +1529,7 @@ class TelegramService:
             logger.error("execute_custom_draft_creation_failed", error=str(exc))
             await self.telegram_client.send_message(
                 chat_id=chat_id,
-                text=f"⚠️ Failed to compose draft: {escape_html(str(exc))}",
+                text=f"! Failed to compose draft: {escape_html(str(exc))}",
             )
 
     async def _render_updated_draft_message(
@@ -1530,15 +1575,15 @@ class TelegramService:
 
         inline_rows = [
             [
-                {"text": "✅ Approve & Send", "callback_data": t_approve},
-                {"text": "✍️ Revise", "callback_data": t_revise},
-                {"text": "❌ Reject", "callback_data": t_reject},
+                {"text": "✓ Approve & Send", "callback_data": t_approve},
+                {"text": "✎ Revise", "callback_data": t_revise},
+                {"text": "✕ Reject", "callback_data": t_reject},
             ],
             [
-                {"text": "⚡ Shorter", "callback_data": t_shorter},
-                {"text": "👔 Formal", "callback_data": t_formal},
-                {"text": "😊 Friendly", "callback_data": t_friendly},
-                {"text": "🎯 Direct", "callback_data": t_firm},
+                {"text": "▪ Shorter", "callback_data": t_shorter},
+                {"text": "▪ Formal", "callback_data": t_formal},
+                {"text": "▪ Friendly", "callback_data": t_friendly},
+                {"text": "▪ Direct", "callback_data": t_firm},
             ],
         ]
 
@@ -1547,7 +1592,7 @@ class TelegramService:
             inline_rows.append(
                 [
                     {
-                        "text": "🌐 View in Web App",
+                        "text": "⟡ View in Web App",
                         "url": f"{frontend_url}/drafts/{draft.id}",
                     }
                 ]
@@ -1556,7 +1601,7 @@ class TelegramService:
         keyboard = {"inline_keyboard": inline_rows}
 
         msg_text = (
-            f"📬 <b>Revised Draft Ready (v{version.version})</b>\n\n"
+            f"◈ <b>Revised Draft Ready (v{version.version})</b>\n\n"
             f"<b>From:</b> {escape_html(email.sender)}\n"
             f"<b>Subject:</b> {escape_html(email.subject)}\n\n"
             f"<b>Proposed Reply:</b>\n"
@@ -1599,6 +1644,7 @@ class TelegramService:
                 recipient=recipient,
                 notes=notes,
                 user_name=user.name if user else None,
+                signature=(user.prefs or {}).get("signature") if user else None,
                 api_key=user_groq_key,
             )
             if msg_id:
@@ -1808,12 +1854,14 @@ class TelegramService:
             with contextlib.suppress(Exception):
                 user_groq_key = await self.auth_service.get_user_groq_api_key(user_id)
 
+        user = await self.user_repo.get_by_id(user_id)
         sched_svc = ScheduledEmailService(settings=self.settings, groq_service=self.groq_service)
         new_subj, new_body = await sched_svc.revise_subject_and_body(
             subject=state["subject"],
             body=state["body"],
             instruction=instruction,
             tone=tone,
+            signature=(user.prefs or {}).get("signature") if user else None,
             api_key=user_groq_key,
         )
         state["subject"] = new_subj

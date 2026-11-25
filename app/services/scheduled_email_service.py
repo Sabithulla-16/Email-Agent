@@ -145,13 +145,18 @@ class ScheduledEmailService:
         recipient: str,
         notes: str,
         user_name: str | None = None,
+        signature: str | None = None,
         api_key: str | None = None,
     ) -> tuple[str, str]:
         """Polish user notes into (subject, body) using Groq LLM with safe fallback."""
+        sig_block = (
+            f"Sign-off Signature (always end with this):\n{signature}\n" if signature else ""
+        )
         prompt = (
             "Write a clear, professional email based on the user's notes.\n"
             f"Sender name: {user_name or 'User'}\n"
             f"Recipient: {recipient}\n"
+            f"{sig_block}"
             f"Notes: {notes}\n\n"
             'Return strictly valid JSON: {"subject": "...", "body": "..."}'
         )
@@ -169,12 +174,15 @@ class ScheduledEmailService:
             subj = str(parsed.get("subject") or "").strip()
             body = str(parsed.get("body") or "").strip()
             if subj and body:
+                if signature and signature.strip() not in body:
+                    body = f"{body}\n\n{signature.strip()}"
                 return subj, body
         except Exception as exc:
             logger.debug("schedule_compose_llm_fallback", error=str(exc))
 
         first_line = notes.strip().splitlines()[0][:60]
-        return f"Message: {first_line}", notes.strip()
+        fallback_body = f"{notes.strip()}\n\n{signature.strip()}" if signature else notes.strip()
+        return f"Message: {first_line}", fallback_body
 
     async def revise_subject_and_body(
         self,
@@ -182,6 +190,7 @@ class ScheduledEmailService:
         body: str,
         instruction: str = "",
         tone: str | None = None,
+        signature: str | None = None,
         api_key: str | None = None,
     ) -> tuple[str, str]:
         """Revise an existing scheduled email preview/body with user instruction or tone."""
@@ -195,10 +204,12 @@ class ScheduledEmailService:
         if not directive:
             return subject, body
 
+        sig_block = f"Sign-off Signature (preserve at end):\n{signature}\n" if signature else ""
         prompt = (
             "Revise the following email according to the instruction.\n"
             f"Current Subject: {subject}\n"
             f"Current Body:\n{body}\n\n"
+            f"{sig_block}"
             f"Instruction: {directive}\n\n"
             'Return strictly valid JSON: {"subject": "...", "body": "..."}'
         )
@@ -215,6 +226,8 @@ class ScheduledEmailService:
             parsed = json.loads(cleaned)
             new_subj = str(parsed.get("subject") or "").strip() or subject
             new_body = str(parsed.get("body") or "").strip() or body
+            if signature and signature.strip() not in new_body:
+                new_body = f"{new_body}\n\n{signature.strip()}"
             return new_subj, new_body
         except Exception as exc:
             logger.debug("schedule_revise_llm_fallback", error=str(exc))

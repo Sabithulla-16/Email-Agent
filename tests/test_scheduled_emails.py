@@ -318,3 +318,53 @@ async def test_schedule_preview_revise_accept_and_manage_edit():
         await svc._handle_message({"chat": {"id": chat_id}, "text": "new@corp.com"})
         assert chat_id not in _PENDING_SCHEDULE_EDIT_STATES
         mock_update.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_telegram_signature_command_and_scheduled_fallback():
+    chat_id = 333444
+    user_id = uuid.uuid4()
+    now = datetime.now(UTC)
+    user = UserRow(
+        id=user_id,
+        google_sub="sub1",
+        email="alice@example.com",
+        prefs={},
+        created_at=now,
+        updated_at=now,
+    )
+
+    telegram_repo = MagicMock()
+    telegram_repo.get_link_by_chat_id = AsyncMock(
+        return_value=TelegramLinkRow(
+            user_id=user_id,
+            chat_id=chat_id,
+            is_active=True,
+            linked_at=now,
+            updated_at=now,
+        )
+    )
+    user_repo = MagicMock()
+    user_repo.get_by_id = AsyncMock(return_value=user)
+    user_repo.update_user = AsyncMock(return_value=user)
+
+    tg_client = MagicMock()
+    tg_client.send_message = AsyncMock(return_value={"message_id": 1})
+
+    svc = TelegramService(
+        telegram_repo=telegram_repo,
+        user_repo=user_repo,
+        email_repo=MagicMock(),
+        draft_repo=MagicMock(),
+        approval_service=MagicMock(),
+        notification_service=MagicMock(),
+        telegram_client=tg_client,
+    )
+
+    await svc._handle_command(chat_id, "/signature Best regards, Sabit")
+    update_arg = user_repo.update_user.call_args[0][1]
+    assert update_arg.prefs["signature"] == "Best regards, Sabit"
+
+    await svc._handle_command(chat_id, "/signature clear")
+    update_arg_clear = user_repo.update_user.call_args[0][1]
+    assert update_arg_clear.prefs["signature"] == ""
