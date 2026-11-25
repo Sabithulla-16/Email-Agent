@@ -1,5 +1,6 @@
 """Email Synchronization Engine: initial lookback, incremental history sync, and deduplication."""
 
+import zoneinfo
 from datetime import UTC, datetime, timedelta
 from email.utils import parseaddr, parsedate_to_datetime
 from typing import Any
@@ -69,7 +70,19 @@ class SyncService:
             synced_count = 0
             newest_history_id: str | None = None
 
-            if last_history_id:
+            long_disconnect = False
+            if last_history_id and sync_state and isinstance(sync_state.last_run_at, datetime):
+                last_run = sync_state.last_run_at
+                last_run_utc = (
+                    last_run.astimezone(UTC) if last_run.tzinfo else last_run.replace(tzinfo=UTC)
+                )
+                if datetime.now(UTC) - last_run_utc >= timedelta(days=1):
+                    long_disconnect = True
+
+            if long_disconnect:
+                logger.info("long_disconnect_syncing_today_only", user_id=str(user_id))
+                synced_count, newest_history_id = await self._sync_today_only(user, client)
+            elif last_history_id:
                 try:
                     synced_count, newest_history_id = await self._incremental_sync(
                         user, client, last_history_id
@@ -120,6 +133,37 @@ class SyncService:
         synced = 0
         newest_history_id: str | None = None
 
+        for m in messages:
+            msg_id = m.get("id")
+            if not msg_id:
+                continue
+            history_id = await self._process_and_store_message(user, client, msg_id)
+            if history_id:
+                synced += 1
+                newest_history_id = max(
+                    newest_history_id or "0",
+                    history_id,
+                    key=lambda x: int(x) if x.isdigit() else 0,
+                )
+
+        return synced, newest_history_id
+
+    async def _sync_today_only(self, user: UserRow, client: GmailClient) -> tuple[int, str | None]:
+        """Fetch only emails received on the current local day (after long disconnect)."""
+        user_tz = user.timezone if user.timezone and user.timezone != "UTC" else "Asia/Kolkata"
+        try:
+            tz: Any = zoneinfo.ZoneInfo(user_tz)
+        except Exception:
+            tz = zoneinfo.ZoneInfo("Asia/Kolkata")
+        today_str = datetime.now(tz).strftime("%Y/%m/%d")
+        query = f"after:{today_str} -label:DRAFT -label:SPAM -label:TRASH"
+
+        logger.info("running_today_only_sync", user_id=str(user.id), query=query)
+        msg_list_resp = await client.list_messages(query=query, max_results=100)
+        messages = msg_list_resp.get("messages", [])
+
+        synced = 0
+        newest_history_id: str | None = None
         for m in messages:
             msg_id = m.get("id")
             if not msg_id:

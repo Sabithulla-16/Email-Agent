@@ -1,8 +1,8 @@
 """Tests for IST 3x daily incremental digest schedule and Supabase field-level encryption."""
 
 import uuid
-from datetime import UTC, datetime, time
-from unittest.mock import AsyncMock, MagicMock
+from datetime import UTC, datetime, time, timedelta
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -312,3 +312,48 @@ async def test_repos_encrypt_before_db_and_decrypt_on_read():
     assert stored_rpc_params["p_user_instruction"].startswith(ENC_PREFIX)
     assert dv_row.body == "Confidential reply draft"
     assert dv_row.user_instruction == "Make it polite"
+
+
+@pytest.mark.asyncio
+async def test_sync_service_long_disconnect_syncs_today_only():
+    from app.models.db import SyncStateRow
+    from app.services.sync_service import SyncService
+
+    user_id = uuid.uuid4()
+    now = datetime.now(UTC)
+    user = UserRow(
+        id=user_id,
+        google_sub="sub1",
+        email="u@test.com",
+        timezone="Asia/Kolkata",
+        created_at=now,
+        updated_at=now,
+    )
+    user_repo = MagicMock()
+    user_repo.get_by_id = AsyncMock(return_value=user)
+    user_repo.acquire_sync_lock = AsyncMock(return_value=True)
+    user_repo.release_sync_lock = AsyncMock()
+    user_repo.update_sync_progress = AsyncMock()
+    user_repo.get_sync_state = AsyncMock(
+        return_value=SyncStateRow(
+            user_id=user_id,
+            last_history_id="12345",
+            last_run_at=now - timedelta(days=2),
+            created_at=now,
+            updated_at=now,
+        )
+    )
+
+    auth_svc = MagicMock()
+    auth_svc.get_valid_access_token = AsyncMock(return_value="tok")
+
+    svc = SyncService(user_repo=user_repo, email_repo=MagicMock(), auth_service=auth_svc)
+    svc._sync_today_only = AsyncMock(return_value=(3, "12399"))  # type: ignore[method-assign]
+    svc._incremental_sync = AsyncMock()  # type: ignore[method-assign]
+
+    with patch("app.services.sync_service.GmailClient"):
+        res = await svc.sync_user_emails(user_id)
+
+    assert res["synced"] == 3
+    svc._sync_today_only.assert_awaited_once()
+    svc._incremental_sync.assert_not_called()

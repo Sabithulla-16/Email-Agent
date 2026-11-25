@@ -118,6 +118,12 @@ async def run_direct_sync_cycle(target_user_id: str | None = None) -> dict[str, 
 
     for user in active_users:
         try:
+            # Skip disconnected users so server Groq tokens are not wasted
+            tg_link = await telegram_repo.get_link_by_user_id(user.id)
+            if not tg_link or not tg_link.is_active:
+                logger.debug("direct_sync_skipped_user_disconnected", user_id=str(user.id))
+                continue
+
             # 1. Sync inbox and generate reply drafts
             sync_res = await run_user_sync_pipeline(ctx, str(user.id))
             results.append(sync_res)

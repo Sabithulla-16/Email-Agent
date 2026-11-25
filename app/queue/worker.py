@@ -1,5 +1,6 @@
 """ARQ background worker for scheduled email sync, Groq analysis, drafting, and digests."""
 
+import inspect
 from datetime import UTC, datetime
 from typing import Any
 
@@ -215,7 +216,16 @@ async def scheduler_cron_job(ctx: dict[str, Any]) -> dict[str, Any]:
     claimed_count = len(due_users)
     now = datetime.now(UTC)
 
+    telegram_repo = ctx.get("telegram_repo")
     for user in due_users:
+        if telegram_repo is not None:
+            get_link_fn = getattr(telegram_repo, "get_link_by_user_id", None)
+            if inspect.iscoroutinefunction(get_link_fn):
+                tg_link = await get_link_fn(user.id)
+                if not tg_link or not tg_link.is_active:
+                    logger.debug("worker_sync_skipped_user_disconnected", user_id=str(user.id))
+                    continue
+
         # 1. Calculate next wall-clock digest slot (9 AM / 3 PM / 9 PM) in user timezone
         user_tz = user.timezone if user.timezone and user.timezone != "UTC" else "Asia/Kolkata"
         next_digest = compute_next_digest_time(
