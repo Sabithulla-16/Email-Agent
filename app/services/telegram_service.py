@@ -3,6 +3,7 @@
 import contextlib
 import hashlib
 import hmac
+import inspect
 import re
 import secrets
 import time
@@ -32,7 +33,11 @@ from app.services.scheduled_email_service import (
     parse_schedule_time,
 )
 from app.services.scheduler_runner import run_direct_sync_cycle
-from app.services.telegram_client import TelegramClient, escape_html
+from app.services.telegram_client import (
+    TelegramClient,
+    escape_html,
+    markdown_to_telegram_html,
+)
 from app.services.unsubscribe_service import UnsubscribeService
 from app.services.voice_service import (
     VOICE_PRESETS,
@@ -528,6 +533,8 @@ class TelegramService:
         # 4. Natural Language Assistant (Email Q&A + Command Suggestion) for linked users
         link = await self.telegram_repo.get_link_by_chat_id(chat_id)
         if link and len(text) >= 3:
+            if not await self._ensure_user_groq_key(chat_id, link.user_id):
+                return
             await self._handle_inbox_qa(chat_id, link.user_id, text, free_text=True)
             return
 
@@ -539,6 +546,29 @@ class TelegramService:
                 "or simply ask me any question about your emails!"
             ),
         )
+
+    async def _ensure_user_groq_key(self, chat_id: int, user_id: UUID | str) -> bool:
+        """Require a personal Groq API key (/setkey) before activating email/AI features."""
+        get_user_fn = getattr(self.user_repo, "get_by_id", None)
+        if not inspect.iscoroutinefunction(get_user_fn):
+            return True
+        user = await get_user_fn(user_id)
+        if user is None or not hasattr(user, "prefs"):
+            return True
+        if user.prefs and user.prefs.get("groq_api_key_encrypted"):
+            return True
+        await self.telegram_client.send_message(
+            chat_id=chat_id,
+            text=(
+                "▸ <b>Groq API Key Required</b>\n\n"
+                "To activate your AI email assistant, set your personal Groq API key first:\n\n"
+                "<code>/setkey gsk_your_key_here</code>\n\n"
+                "<i>Get a free key in 30 seconds at https://console.groq.com/keys</i>\n"
+                "<i>Your key is encrypted with AES-256-GCM and your message is deleted "
+                "immediately.</i>"
+            ),
+        )
+        return False
 
     async def _handle_inbox_qa(
         self,
@@ -566,7 +596,7 @@ class TelegramService:
             answer = result.get("answer", "")
             citations = result.get("citations", [])
 
-            resp_text = f"◈ <b>Answer:</b>\n\n{escape_html(answer)}"
+            resp_text = f"◈ <b>Answer:</b>\n\n{markdown_to_telegram_html(answer)}"
             if citations:
                 resp_text += "\n\n<b>Sources:</b>"
                 for c in citations[:3]:
@@ -700,6 +730,24 @@ class TelegramService:
             return
 
         user_id = link.user_id
+
+        _SETUP_COMMANDS = {
+            "/start",
+            "/setkey",
+            "/mykey",
+            "/removekey",
+            "/help",
+            "/reconnect",
+            "/disconnect",
+            "/settings",
+            "/signature",
+            "/voice",
+            "/cancel",
+            "/snooze",
+            "/mute",
+        }
+        if cmd not in _SETUP_COMMANDS and not await self._ensure_user_groq_key(chat_id, user_id):
+            return
 
         if cmd == "/setkey":
             if len(parts) < 2:

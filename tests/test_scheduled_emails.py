@@ -175,6 +175,7 @@ async def test_telegram_schedule_3_step_flow():
             google_sub="sub1",
             email="alice@example.com",
             timezone="Asia/Kolkata",
+            prefs={"groq_api_key_encrypted": "enc:v1:test"},
             created_at=now,
             updated_at=now,
         )

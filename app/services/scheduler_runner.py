@@ -124,6 +124,11 @@ async def run_direct_sync_cycle(target_user_id: str | None = None) -> dict[str, 
                 logger.debug("direct_sync_skipped_user_disconnected", user_id=str(user.id))
                 continue
 
+            # Skip users who haven't configured their personal Groq API key (/setkey) yet
+            if not (user.prefs and user.prefs.get("groq_api_key_encrypted")):
+                logger.debug("direct_sync_skipped_missing_groq_key", user_id=str(user.id))
+                continue
+
             # 1. Sync inbox and generate reply drafts
             sync_res = await run_user_sync_pipeline(ctx, str(user.id))
             results.append(sync_res)

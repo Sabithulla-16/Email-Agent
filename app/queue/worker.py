@@ -115,9 +115,22 @@ async def run_user_sync_pipeline(ctx: dict[str, Any], user_id: str) -> dict[str,
     sync_res = await sync_svc.sync_user_emails(user_id)
     new_count = sync_res.get("synced", sync_res.get("new_emails_synced", 0))
 
-    # Retrieve user Groq API key (BYOK) if configured
+    # Require user's personal Groq API key (BYOK) before running sync/LLM pipeline
+    user_repo: Any = ctx.get("user_repo")
     user_groq_key: str | None = None
     auth_svc: Any = getattr(approval_svc, "auth_service", None) or ctx.get("auth_service")
+    if user_repo and inspect.iscoroutinefunction(getattr(user_repo, "get_by_id", None)):
+        u_row = await user_repo.get_by_id(user_id)
+        if u_row and not (u_row.prefs and u_row.prefs.get("groq_api_key_encrypted")):
+            logger.info("worker_pipeline_skipped_missing_groq_key", user_id=user_id)
+            return {
+                "user_id": user_id,
+                "new_emails_synced": 0,
+                "emails_analyzed": 0,
+                "drafts_created": 0,
+                "status": "awaiting_groq_key",
+            }
+
     if auth_svc and hasattr(auth_svc, "get_user_groq_api_key"):
         try:
             res_k = auth_svc.get_user_groq_api_key(user_id)
@@ -218,6 +231,10 @@ async def scheduler_cron_job(ctx: dict[str, Any]) -> dict[str, Any]:
 
     telegram_repo = ctx.get("telegram_repo")
     for user in due_users:
+        if not (user.prefs and user.prefs.get("groq_api_key_encrypted")):
+            logger.debug("worker_cron_skipped_missing_groq_key", user_id=str(user.id))
+            continue
+
         if telegram_repo is not None:
             get_link_fn = getattr(telegram_repo, "get_link_by_user_id", None)
             if inspect.iscoroutinefunction(get_link_fn):

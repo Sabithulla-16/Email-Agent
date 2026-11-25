@@ -39,6 +39,26 @@ def escape_html(text: str) -> str:
     return html.escape(text, quote=False)
 
 
+def markdown_to_telegram_html(text: str) -> str:
+    """Convert LLM Markdown (**bold**, *italic*, `code`, headings, bullets) to Telegram HTML."""
+    import re
+
+    escaped = escape_html(text)
+
+    # 1. Inline code `...`
+    escaped = re.sub(r"`([^`\n]+)`", r"<code>\1</code>", escaped)
+    # 2. Markdown headings at line start -> bold
+    escaped = re.sub(r"(?m)^#{1,6}\s+(.+)$", r"<b>\1</b>", escaped)
+    # 3. Bullet points (- or * at line start) -> •
+    escaped = re.sub(r"(?m)^[-*]\s+", "• ", escaped)
+    # 4. Bold **text** or __text__
+    escaped = re.sub(r"\*\*([^\n*]+?)\*\*", r"<b>\1</b>", escaped)
+    escaped = re.sub(r"__([^\n_]+?)__", r"<b>\1</b>", escaped)
+    # 5. Italic *text* (single asterisks not adjacent to *)
+    escaped = re.sub(r"(?<!\*)\*([^\n*]+?)\*(?!\*)", r"<i>\1</i>", escaped)
+    return escaped
+
+
 def _truncate_html_safely(text: str, max_len: int, suffix: str) -> str:
     """Truncate HTML text without leaving unclosed <b>/<i>/<code>/<blockquote> tags."""
     import re

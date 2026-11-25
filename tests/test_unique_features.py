@@ -401,3 +401,61 @@ async def test_free_text_assistant_includes_bot_commands_and_oauth_prompt():
     assert "/schedule" in captured_prompt["text"]
     assert "/signature" in captured_prompt["text"]
     assert "/schedule" in res["answer"]
+
+
+@pytest.mark.asyncio
+async def test_markdown_to_telegram_html_and_byok_key_gating():
+    from app.services.telegram_client import markdown_to_telegram_html
+
+    md = "### Summary\n- **Urgent:** Check `/schedule` & *confirm* <script>alert(1)</script>"
+    rendered = markdown_to_telegram_html(md)
+    assert "<b>Summary</b>" in rendered
+    assert "• <b>Urgent:</b>" in rendered
+    assert "<code>/schedule</code>" in rendered
+    assert "<i>confirm</i>" in rendered
+    assert "&lt;script&gt;" in rendered
+
+    # User without groq_api_key_encrypted must be gated on /sync and free text
+    user_id = uuid.uuid4()
+    now = datetime.now(UTC)
+    no_key_user = UserRow(
+        id=user_id,
+        google_sub="sub_nokey",
+        email="nokey@test.com",
+        prefs={},
+        created_at=now,
+        updated_at=now,
+    )
+    telegram_repo = MagicMock()
+    telegram_repo.get_link_by_chat_id = AsyncMock(
+        return_value=TelegramLinkRow(
+            user_id=user_id,
+            chat_id=555,
+            is_active=True,
+            linked_at=now,
+            updated_at=now,
+        )
+    )
+    telegram_repo.get_and_clear_pending_interaction = AsyncMock(return_value=None)
+
+    user_repo = MagicMock()
+    user_repo.get_by_id = AsyncMock(return_value=no_key_user)
+
+    tg_client = MagicMock()
+    tg_client.send_message = AsyncMock(return_value={"message_id": 1})
+
+    svc = TelegramService(
+        telegram_repo=telegram_repo,
+        user_repo=user_repo,
+        email_repo=MagicMock(),
+        draft_repo=MagicMock(),
+        approval_service=MagicMock(),
+        notification_service=MagicMock(),
+        telegram_client=tg_client,
+    )
+
+    await svc._handle_message({"chat": {"id": 555}, "text": "/sync"})
+    assert "Groq API Key Required" in tg_client.send_message.call_args.kwargs["text"]
+
+    await svc._handle_message({"chat": {"id": 555}, "text": "any urgent emails?"})
+    assert "Groq API Key Required" in tg_client.send_message.call_args.kwargs["text"]

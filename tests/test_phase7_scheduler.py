@@ -203,6 +203,7 @@ async def test_scheduler_cron_job_enqueues_deterministic_jobs():
         email="due@example.com",
         timezone="UTC",
         digest_time=time(8, 0),
+        prefs={"groq_api_key_encrypted": "enc:v1:test"},
         next_digest_at=now - timedelta(minutes=5),
         created_at=now,
         updated_at=now,
