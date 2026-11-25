@@ -1,6 +1,7 @@
 """Authentication and User Profile Endpoints."""
 
 import html
+import secrets
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Cookie, Depends, Request, Response, status
@@ -180,106 +181,183 @@ async def google_auth_callback(
         )
         resp.delete_cookie("oauth_verifier", path="/")
 
-    # 1. Telegram OAuth flow: Return HTML with 3..2..1 countdown and close the in-app tab
+    # 1. Telegram OAuth flow: Return hardened, Impeccable-crafted HTML success screen
     if client_state and client_state.startswith("tg_"):
         esc_email = html.escape(user.email)
+        csp_nonce = secrets.token_urlsafe(16)
         tg_html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Gmail Connected - Email Agent</title>
+  <title>Gmail Connected — Email Agent</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
+    :root {{
+      --bg: #0b0f17;
+      --panel: #121826;
+      --border: rgba(148, 163, 184, 0.18);
+      --fg: #f8fafc;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --btn-bg: #0284c7;
+      --btn-hover: #0369a1;
+      --ok: #34d399;
+    }}
     * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    ::selection {{ background: rgba(56, 189, 248, 0.25); color: var(--fg); }}
     body {{
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background: #0f172a;
-      color: #f8fafc;
+      font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--fg);
       min-height: 100vh;
       display: flex;
       align-items: center;
       justify-content: center;
       padding: 1.5rem;
+      -webkit-font-smoothing: antialiased;
     }}
-    .card {{
-      background: #1e293b;
-      border: 1px solid #334155;
-      border-radius: 1.25rem;
-      padding: 2.5rem 2rem;
-      max-width: 440px;
+    .panel {{
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 2.25rem 2rem;
+      max-width: 420px;
       width: 100%;
       text-align: center;
-      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+      animation: panelIn 320ms cubic-bezier(0.16, 1, 0.3, 1) both;
     }}
-    .icon {{
-      font-size: 3.5rem;
-      margin-bottom: 1rem;
+    @keyframes panelIn {{
+      from {{ opacity: 0; transform: translateY(8px); }}
+      to {{ opacity: 1; transform: translateY(0); }}
+    }}
+    @media (prefers-reduced-motion: reduce) {{
+      .panel {{ animation: none; }}
+    }}
+    .mark {{
+      width: 48px;
+      height: 48px;
+      margin: 0 auto 1.25rem;
+      border-radius: 12px;
+      background: rgba(52, 211, 153, 0.1);
+      border: 1px solid rgba(52, 211, 153, 0.28);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--ok);
     }}
     h1 {{
-      font-size: 1.5rem;
-      font-weight: 700;
-      color: #38bdf8;
+      font-size: 1.375rem;
+      font-weight: 650;
+      letter-spacing: -0.02em;
+      color: var(--fg);
       margin-bottom: 0.5rem;
     }}
-    p {{
-      color: #94a3b8;
-      font-size: 0.95rem;
-      line-height: 1.6;
-      margin-bottom: 1.25rem;
-    }}
-    .email-box {{
-      background: #0f172a;
-      border: 1px solid #334155;
-      border-radius: 0.5rem;
-      padding: 0.75rem 1rem;
-      color: #f1f5f9;
-      font-weight: 600;
-      font-size: 0.9rem;
+    .lead {{
+      color: var(--muted);
+      font-size: 0.9375rem;
+      line-height: 1.55;
       margin-bottom: 1.5rem;
+    }}
+    .account-row {{
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0.75rem 1rem;
+      color: var(--fg);
+      font-size: 0.875rem;
+      font-weight: 500;
+      margin-bottom: 1rem;
       word-break: break-all;
+    }}
+    .account-row svg {{
+      flex-shrink: 0;
+      color: var(--accent);
+    }}
+    .trust-note {{
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.4rem;
+      font-size: 0.75rem;
+      color: var(--muted);
+      margin-bottom: 1.5rem;
+    }}
+    .trust-note svg {{
+      color: var(--ok);
+      flex-shrink: 0;
     }}
     .btn {{
       display: block;
       width: 100%;
-      background: #2563eb;
+      background: var(--btn-bg);
       color: #ffffff;
       font-weight: 600;
-      text-decoration: none;
-      padding: 0.9rem 1.5rem;
-      border: none;
+      padding: 0.85rem 1.25rem;
+      border: 1px solid rgba(255, 255, 255, 0.08);
       cursor: pointer;
-      border-radius: 0.75rem;
-      font-size: 1rem;
-      transition: background 0.2s;
+      border-radius: 10px;
+      font-size: 0.9375rem;
+      transition: background 150ms ease;
     }}
-    .btn:hover {{
-      background: #1d4ed8;
+    .btn:hover {{ background: var(--btn-hover); }}
+    .btn:focus-visible {{
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
     }}
     .hint {{
       margin-top: 1rem;
-      font-size: 0.85rem;
-      color: #94a3b8;
+      font-size: 0.8125rem;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
     }}
     .countdown {{
-      font-weight: 700;
-      color: #38bdf8;
-      font-size: 1.1rem;
+      font-weight: 600;
+      color: var(--fg);
     }}
   </style>
 </head>
 <body>
-  <div class="card">
-    <div class="icon">✦</div>
-    <h1>Gmail Connected!</h1>
-    <p>Your Google account has been linked to your Telegram email assistant.</p>
-    <div class="email-box">{esc_email}</div>
-    <button onclick="closeTab()" class="btn" id="returnBtn">✓ Done — Return to Chat</button>
+  <main class="panel">
+    <div class="mark" aria-hidden="true">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M20 6 9 17l-5-5"/>
+      </svg>
+    </div>
+    <h1>Gmail Connected</h1>
+    <p class="lead">Your Google account is verified and linked to your Telegram assistant.</p>
+    <div class="account-row">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect width="20" height="16" x="2" y="4" rx="2"/>
+        <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>
+      </svg>
+      <span>{esc_email}</span>
+    </div>
+    <div class="trust-note">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"/>
+      </svg>
+      <span>AES-256-GCM encrypted &middot; OAuth PKCE verified</span>
+    </div>
+    <button type="button" class="btn" id="returnBtn">Return to Chat</button>
     <p class="hint" id="status-hint">
-      Closing window in <span class="countdown" id="countdown">3</span>s...
+      Closing window in <span class="countdown" id="countdown">3</span>s
     </p>
-  </div>
-  <script>
+  </main>
+  <script nonce="{csp_nonce}">
+    try {{
+      if (window.history && window.history.replaceState) {{
+        window.history.replaceState(null, "", window.location.pathname);
+      }}
+    }} catch (e) {{}}
+
     function closeTab() {{
       try {{
         if (window.Telegram && window.Telegram.WebApp) {{
@@ -292,15 +370,18 @@ async def google_auth_callback(
       }} catch (e) {{}}
       var h = document.getElementById("status-hint");
       if (h) {{
-        h.innerHTML = "You're all set! Tap the <b>✕</b> at top left to return to chat.";
+        h.textContent = "All set. Close this window to return to Telegram.";
       }}
     }}
+
+    var btn = document.getElementById("returnBtn");
+    if (btn) btn.addEventListener("click", closeTab);
 
     var seconds = 3;
     var timer = setInterval(function() {{
       seconds--;
       var el = document.getElementById("countdown");
-      if (el) el.innerText = seconds;
+      if (el) el.textContent = String(seconds);
       if (seconds <= 0) {{
         clearInterval(timer);
         closeTab();
@@ -310,6 +391,13 @@ async def google_auth_callback(
 </body>
 </html>"""
         tg_resp = HTMLResponse(content=tg_html, status_code=status.HTTP_200_OK)
+        tg_resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, private"
+        tg_resp.headers["Pragma"] = "no-cache"
+        tg_resp.headers["Referrer-Policy"] = "no-referrer"
+        tg_resp.headers["Content-Security-Policy"] = (
+            f"default-src 'none'; script-src 'nonce-{csp_nonce}' https://telegram.org; "
+            "style-src 'unsafe-inline'; object-src 'none'; base-uri 'none'; frame-ancestors 'none';"
+        )
         _set_auth_cookies(tg_resp)
         return tg_resp
 
