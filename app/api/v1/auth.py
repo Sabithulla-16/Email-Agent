@@ -133,7 +133,7 @@ async def google_auth_callback(
                     f"✦ <b>Gmail Connected Successfully!</b>\n\n"
                     f"Account: <code>{user.email}</code>\n"
                     f"User: <b>{user.name}</b>\n\n"
-                    f"🔑 <b>Final Step: Set your Groq API Key</b>\n"
+                    f"▸ <b>Final Step: Set your Groq API Key</b>\n"
                     f"To enable AI email triage, summaries, and reply drafts on your own quota, "
                     f"enter your Groq API key:\n\n"
                     f"<code>/setkey gsk_your_key_here</code>\n\n"
@@ -270,7 +270,7 @@ async def google_auth_callback(
 </head>
 <body>
   <div class="card">
-    <div class="icon">🎉</div>
+    <div class="icon">✦</div>
     <h1>Gmail Connected!</h1>
     <p>Your Google account has been linked to your Telegram email assistant.</p>
     <div class="email-box">{esc_email}</div>

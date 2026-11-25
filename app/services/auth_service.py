@@ -260,19 +260,22 @@ class AuthService:
             if not redis:
                 return
             ttl = max(60, expires_in - 60)
-            await redis.setex(f"gmail_access_token:{user_id}", ttl, token)
+            enc_token = self.vault.encrypt_field(token) or token
+            await redis.setex(f"gmail_access_token:{user_id}", ttl, enc_token)
         except Exception as exc:
             logger.warning("failed_to_cache_access_token_in_redis", error=str(exc))
 
     async def get_valid_access_token(self, user_id: UUID | str) -> str:
         """Retrieve valid access token from Redis cache or refresh it using the vault."""
-        # 1. Check Redis cache
+        # 1. Check Redis cache (decrypting AES-256-GCM payload)
         try:
             redis = get_redis()
             if redis:
                 cached = await redis.get(f"gmail_access_token:{user_id}")
                 if cached:
-                    return cached
+                    decrypted = self.vault.decrypt_field(cached)
+                    if decrypted:
+                        return decrypted
         except Exception:
             pass
 
@@ -386,6 +389,8 @@ class AuthService:
         if not enc_key:
             return None
         try:
+            if enc_key.startswith("enc:v"):
+                return self.vault.decrypt_field(enc_key)
             return self.vault.decrypt(enc_key)
         except Exception as exc:
             logger.warning("failed_to_decrypt_user_groq_key", user_id=str(user_id), error=str(exc))
@@ -415,13 +420,15 @@ class AuthService:
             await test_client.models.list()
         except Exception as exc:
             logger.warning("groq_api_key_validation_failed", error=str(exc))
-            raise ValidationError(f"Invalid Groq API key: {exc}") from exc
+            raise ValidationError(
+                "Invalid or rejected Groq API key. Please verify your key at console.groq.com."
+            ) from exc
 
         user = await self.user_repo.get_by_id(user_id)
         if not user:
             raise NotFoundError(f"User {user_id} not found")
 
-        enc_key, _ = self.vault.encrypt(cleaned)
+        enc_key = self.vault.encrypt_field(cleaned) or ""
         masked_key = f"{cleaned[:7]}...{cleaned[-4:]}"
         new_prefs = dict(user.prefs)
         new_prefs["groq_api_key_encrypted"] = enc_key

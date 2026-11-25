@@ -175,9 +175,13 @@ def validate_startup_config(settings: Settings) -> None:
     tok_sec = (
         settings.TOKEN_ENCRYPTION_KEY.get_secret_value() if settings.TOKEN_ENCRYPTION_KEY else ""
     )
-    if not tok_sec or len(tok_sec.encode("utf-8")) != 32:
+    if (
+        not tok_sec
+        or len(tok_sec.encode("utf-8")) != 32
+        or tok_sec == "01234567890123456789012345678901"
+    ):
         errors.append(
-            "TOKEN_ENCRYPTION_KEY: Must be exactly 32 bytes (256 bits) for AES-256-GCM vault."
+            "TOKEN_ENCRYPTION_KEY: Must be a unique 32-byte key (not the local dev default)."
         )
 
     # 3. SUPABASE_URL & SUPABASE_SECRET_KEY

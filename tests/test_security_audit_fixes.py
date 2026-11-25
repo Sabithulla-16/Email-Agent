@@ -122,3 +122,30 @@ async def test_unsubscribe_blocks_ssrf_redirect():
 
     assert res["unsubscribed"] is False
     assert res["method"] == "none"
+
+
+@pytest.mark.asyncio
+async def test_redis_access_token_is_encrypted():
+    from app.core.vault import ENC_PREFIX, TokenVault
+    from app.services.auth_service import AuthService
+
+    vault = TokenVault()
+    auth_svc = AuthService(user_repo=MagicMock(), vault=vault)
+    mock_redis = MagicMock()
+    stored: dict[str, str] = {}
+
+    async def _setex(key, _ttl, val):
+        stored[key] = val
+
+    async def _get(key):
+        return stored.get(key)
+
+    mock_redis.setex = _setex
+    mock_redis.get = _get
+
+    with patch("app.services.auth_service.get_redis", return_value=mock_redis):
+        await auth_svc._cache_access_token("u1", "ya29.secret_google_token", 3600)
+        assert stored["gmail_access_token:u1"].startswith(ENC_PREFIX)
+        assert "ya29.secret_google_token" not in stored["gmail_access_token:u1"]
+        recovered = await auth_svc.get_valid_access_token("u1")
+        assert recovered == "ya29.secret_google_token"

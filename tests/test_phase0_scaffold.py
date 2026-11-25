@@ -78,7 +78,7 @@ def test_validate_startup_config_production_valid() -> None:
     good_prod_settings = Settings(
         ENVIRONMENT="production",
         APP_SECRET_KEY="a" * 32,
-        TOKEN_ENCRYPTION_KEY="01234567890123456789012345678901",
+        TOKEN_ENCRYPTION_KEY="prod-test-encryption-key-32-byte",
         SUPABASE_URL="https://project.supabase.co",
         SUPABASE_SECRET_KEY="real_secret_role_key_value",
         REDIS_URL="rediss://default:password@host:6379",

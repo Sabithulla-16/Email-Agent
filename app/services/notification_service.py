@@ -189,15 +189,15 @@ class NotificationService:
         # Build inline keyboard
         inline_rows = [
             [
-                {"text": "✅ Approve & Send", "callback_data": t_approve},
-                {"text": "✍️ Revise", "callback_data": t_revise},
-                {"text": "❌ Reject", "callback_data": t_reject},
+                {"text": "✓ Approve & Send", "callback_data": t_approve},
+                {"text": "✎ Revise", "callback_data": t_revise},
+                {"text": "✕ Reject", "callback_data": t_reject},
             ],
             [
-                {"text": "⚡ Shorter", "callback_data": t_shorter},
-                {"text": "👔 Formal", "callback_data": t_formal},
-                {"text": "😊 Friendly", "callback_data": t_friendly},
-                {"text": "🎯 Direct", "callback_data": t_firm},
+                {"text": "▪ Shorter", "callback_data": t_shorter},
+                {"text": "▪ Formal", "callback_data": t_formal},
+                {"text": "▪ Friendly", "callback_data": t_friendly},
+                {"text": "▪ Direct", "callback_data": t_firm},
             ],
         ]
 
@@ -208,7 +208,7 @@ class NotificationService:
             inline_rows.append(
                 [
                     {
-                        "text": "📅 Add to Google Calendar",
+                        "text": "◷ Add to Google Calendar",
                         "url": meeting_info["calendar_url"],
                     }
                 ]
@@ -219,7 +219,7 @@ class NotificationService:
             inline_rows.append(
                 [
                     {
-                        "text": "🌐 View in Web App",
+                        "text": "⟡ View in Web App",
                         "url": f"{frontend_url}/drafts/{draft.id}",
                     }
                 ]
@@ -233,12 +233,12 @@ class NotificationService:
         bill = extra_svc.extract_bill(email)
         if bill:
             extra_badges.append(
-                f"🧾 <b>Bill:</b> {bill['currency']} {bill['amount']:.2f} (Due: {bill['due_date']})"
+                f"▸ <b>Bill:</b> {bill['currency']} {bill['amount']:.2f} (Due: {bill['due_date']})"
             )
         phishing = extra_svc.scan_phishing_indicators(email)
         if phishing:
             extra_badges.append(
-                "⚠️ <b>Security Alert:</b> Suspicious links / phishing indicators detected!"
+                "! <b>Security Alert:</b> Suspicious links / phishing indicators detected!"
             )
 
         badges_text = ("\n" + "\n".join(extra_badges) + "\n") if extra_badges else ""
@@ -246,9 +246,9 @@ class NotificationService:
         # Build message body
         is_composed = "COMPOSED" in (email.labels or [])
         header_title = (
-            "✍️ <b>Composed Draft Ready for Approval</b>"
+            "✎ <b>Composed Draft Ready for Approval</b>"
             if is_composed
-            else "📬 <b>New Draft Ready for Approval</b>"
+            else "◈ <b>New Draft Ready for Approval</b>"
         )
         address_line = (
             f"<b>To:</b> {escape_html(email.sender_email)}\n"

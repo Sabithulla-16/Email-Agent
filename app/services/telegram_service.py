@@ -988,7 +988,7 @@ class TelegramService:
             await self.telegram_client.send_message(
                 chat_id=chat_id,
                 text=(
-                    f"⚙️ <b>Notification Settings:</b>\n\n"
+                    f"◈ <b>Notification Settings:</b>\n\n"
                     f"• <b>Channel:</b> {channel}\n"
                     f"• <b>Quiet Hours:</b> {quiet}\n"
                     f"• <b>Minimal Mode:</b> {getattr(prefs, 'minimal_mode', False)}"
