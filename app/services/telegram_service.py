@@ -516,10 +516,10 @@ class TelegramService:
             )
             return
 
-        # 4. Natural Language Inbox Q&A for linked users
+        # 4. Natural Language Assistant (Email Q&A + Command Suggestion) for linked users
         link = await self.telegram_repo.get_link_by_chat_id(chat_id)
         if link and len(text) >= 3:
-            await self._handle_inbox_qa(chat_id, link.user_id, text)
+            await self._handle_inbox_qa(chat_id, link.user_id, text, free_text=True)
             return
 
         # Fallback greeting
@@ -531,11 +531,17 @@ class TelegramService:
             ),
         )
 
-    async def _handle_inbox_qa(self, chat_id: int, user_id: UUID | str, query: str) -> None:
-        """Answer natural language question about user's inbox using Groq LLM."""
+    async def _handle_inbox_qa(
+        self,
+        chat_id: int,
+        user_id: UUID | str,
+        query: str,
+        free_text: bool = False,
+    ) -> None:
+        """Answer inbox questions or suggest matching bot commands for free-form text."""
         status_msg = await self.telegram_client.send_message(
             chat_id=chat_id,
-            text="▸ <i>Searching your emails...</i>",
+            text="▸ <i>Checking your emails...</i>" if not free_text else "▸ <i>Thinking...</i>",
         )
         msg_id = status_msg.get("message_id") if isinstance(status_msg, dict) else None
         try:
@@ -544,7 +550,10 @@ class TelegramService:
                 settings=self.settings,
                 auth_service=self.auth_service,
             )
-            result = await qa_svc.answer_question(user_id=user_id, query=query)
+            if free_text:
+                result = await qa_svc.answer_free_text(user_id=user_id, query=query)
+            else:
+                result = await qa_svc.answer_question(user_id=user_id, query=query)
             answer = result.get("answer", "")
             citations = result.get("citations", [])
 

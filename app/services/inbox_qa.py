@@ -12,6 +12,30 @@ from app.services.groq_service import GroqService
 
 logger = structlog.get_logger("app.services.inbox_qa")
 
+TELEGRAM_COMMANDS_CONTEXT = """Available Telegram Bot Commands:
+- /create <to> <notes> : Compose a fresh email draft with AI for your review.
+- /schedule : Guided 3-step email scheduler with preview, revise, and accept.
+- /manage (or /scheduled) : Edit content/recipient, reschedule, or cancel scheduled emails.
+- /pending : Review and approve/revise/reject waiting AI reply drafts.
+- /cancel : Cancel an active /create or /schedule flow.
+- /ask <question> : Ask a factual question strictly over your email archive.
+- /find <keyword> : Search your encrypted email archive by keyword/topic.
+- /radar : Decision & Commitment Radar (who is waiting on you & open follow-ups).
+- /followups : View tracked promises & commitments from your emails.
+- /urgent : Show high-priority unread emails.
+- /unsubscribe : One-tap newsletter & promo purge (unsubscribe and archive).
+- /sync : Manually pull and analyze new emails from Gmail right now.
+- /digest : Compile and send your email digest (text + voice briefing) now.
+- /voice : Send text + voice briefing (/voice list, /voice <name>, /voice on|off).
+- /signature <text> : Set your email sign-off signature (or /signature clear).
+- /setkey <gsk_...> : Set your personal Groq API key.
+- /mykey / /removekey : Check or remove your personal Groq API key.
+- /snooze <hours> / /mute : Pause notifications for N hours or 24h.
+- /settings : View current notification settings.
+- /reconnect : Re-authorize Gmail permissions.
+- /disconnect : Unlink this Telegram chat.
+- /help : Show the full command reference."""
+
 
 class InboxQAService:
     """Answers user natural language questions grounded in their digested email archive."""
@@ -163,6 +187,119 @@ class InboxQAService:
             "answer": answer_text,
             "citations": citations,
         }
+
+    async def answer_free_text(
+        self,
+        user_id: UUID | str,
+        query: str,
+        limit: int = 50,
+        api_key: str | None = None,
+    ) -> dict[str, Any]:
+        """Handle free-form Telegram text: answer from emails OR suggest the right bot command."""
+        user_key = api_key
+        if (
+            not user_key
+            and self.auth_service
+            and hasattr(self.auth_service, "get_user_groq_api_key")
+        ):
+            try:
+                res_k = self.auth_service.get_user_groq_api_key(user_id)
+                user_key = await res_k if hasattr(res_k, "__await__") else res_k
+            except Exception:
+                user_key = None
+
+        emails = await self.email_repo.list_by_user(user_id=user_id, limit=limit)
+        catalog_entries: list[str] = []
+        indexed_emails: dict[int, Any] = {}
+
+        for idx, em in enumerate(emails, start=1):
+            indexed_emails[idx] = em
+            summary_text = ""
+            try:
+                analysis = await self.email_repo.get_analysis(em.id)
+                if analysis and analysis.summary:
+                    summary_text = analysis.summary
+            except Exception:
+                pass
+            if not summary_text:
+                summary_text = (em.snippet or em.subject or "No content available.")[:250]
+            date_str = em.received_at.strftime("%Y-%m-%d %H:%M") if em.received_at else "Recent"
+            catalog_entries.append(
+                f"[Email #{idx}]\n"
+                f"Date: {date_str}\n"
+                f"From: {em.sender} <{em.sender_email}>\n"
+                f"Subject: {em.subject}\n"
+                f"Digest: {summary_text.strip()}\n"
+            )
+
+        catalog_text = (
+            "\n---\n".join(catalog_entries) if catalog_entries else "No synced emails available."
+        )
+
+        prompt = (
+            "You are a helpful AI email assistant inside Telegram.\n"
+            "You have two sources of context:\n"
+            "1) <available_bot_commands>: the exact slash commands this bot supports.\n"
+            "2) <digested_email_catalog>: the user's recent digested emails.\n\n"
+            "INSTRUCTIONS:\n"
+            "1. If the user asks about their emails and relevant facts exist in "
+            "<digested_email_catalog>, answer concisely using ONLY those facts and cite "
+            "[Email #X].\n"
+            "2. If the user wants to perform an action (schedule, compose, change signature, "
+            "change voice, unsubscribe, sync, view drafts, radar) OR if NO email in "
+            "<digested_email_catalog> answers their question, clearly suggest the most "
+            "suitable command(s) from <available_bot_commands> with a short usage example.\n"
+            "3. NEVER fabricate email facts or cite an [Email #X] that does not exist.\n\n"
+            "<available_bot_commands>\n"
+            f"{TELEGRAM_COMMANDS_CONTEXT}\n"
+            "</available_bot_commands>\n\n"
+            "<digested_email_catalog>\n"
+            f"{catalog_text}\n"
+            "</digested_email_catalog>\n\n"
+            f"User Message: {query}"
+        )
+
+        try:
+            answer_text, _ = await self.groq_service.chat_completion_with_fallback(
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2,
+                api_key=user_key,
+            )
+        except Exception as exc:
+            logger.warning("free_text_assistant_failed", error=str(exc))
+            return {
+                "answer": (
+                    "I couldn't process that right now. "
+                    "Use /help to view all commands, /ask <question> for email Q&A, "
+                    "or /find <keyword> to search."
+                ),
+                "citations": [],
+            }
+
+        cited_indices = set()
+        for m in re.findall(r"Email\s*#(\d+)", answer_text, re.IGNORECASE):
+            try:
+                num = int(m)
+                if num in indexed_emails:
+                    cited_indices.add(num)
+            except ValueError:
+                continue
+
+        citations = [
+            {
+                "ref": f"Email #{idx}",
+                "id": str(indexed_emails[idx].id),
+                "sender": indexed_emails[idx].sender,
+                "subject": indexed_emails[idx].subject,
+                "date": (
+                    indexed_emails[idx].received_at.isoformat()
+                    if indexed_emails[idx].received_at
+                    else ""
+                ),
+            }
+            for idx in sorted(cited_indices)
+        ]
+        return {"answer": answer_text, "citations": citations}
 
     async def search_emails(
         self,

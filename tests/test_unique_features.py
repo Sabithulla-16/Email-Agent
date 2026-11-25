@@ -371,3 +371,33 @@ async def test_telegram_voice_preference_and_help_commands():
     help_text = tg_client.send_message.call_args_list[-1].kwargs["text"]
     for cmd_name in ("/radar", "/unsubscribe", "/find", "/voice", "/followups"):
         assert cmd_name in help_text
+
+
+@pytest.mark.asyncio
+async def test_free_text_assistant_includes_bot_commands_and_oauth_prompt():
+    from app.services.auth_service import AuthService
+
+    auth_svc = AuthService(user_repo=MagicMock())
+    url_default = auth_svc.build_authorization_url("challenge123", "state123")
+    assert "prompt=" not in url_default
+    url_force = auth_svc.build_authorization_url("challenge123", "state123", prompt_consent=True)
+    assert "prompt=consent" in url_force
+
+    user_id = uuid.uuid4()
+    email_repo = MagicMock()
+    email_repo.list_by_user = AsyncMock(return_value=[])
+    qa = InboxQAService(email_repo=email_repo)
+
+    captured_prompt: dict[str, str] = {}
+
+    async def _fake_llm(messages, **_kwargs):
+        captured_prompt["text"] = messages[0]["content"]
+        return ("Use /schedule to schedule an email.", "mock")
+
+    with patch.object(qa.groq_service, "chat_completion_with_fallback", side_effect=_fake_llm):
+        res = await qa.answer_free_text(user_id=user_id, query="how do I schedule an email?")
+
+    assert "<available_bot_commands>" in captured_prompt["text"]
+    assert "/schedule" in captured_prompt["text"]
+    assert "/signature" in captured_prompt["text"]
+    assert "/schedule" in res["answer"]

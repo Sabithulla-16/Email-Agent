@@ -142,7 +142,7 @@ class AuthService:
                 if s not in scopes:
                     scopes.append(s)
 
-        params = {
+        params: dict[str, str] = {
             "client_id": self.settings.GOOGLE_CLIENT_ID,
             "redirect_uri": self.settings.GOOGLE_REDIRECT_URI,
             "response_type": "code",
@@ -152,8 +152,9 @@ class AuthService:
             "state": state,
             "code_challenge": code_challenge,
             "code_challenge_method": "S256",
-            "prompt": "consent" if prompt_consent else "select_account",
         }
+        if prompt_consent:
+            params["prompt"] = "consent"
 
         return f"{GOOGLE_AUTH_URL}?{httpx.QueryParams(params)}"
 
