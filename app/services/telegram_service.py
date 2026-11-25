@@ -189,13 +189,20 @@ class TelegramService:
                 archived = res.get("archived_count", 0)
                 status_note = (
                     "Unsubscribed &amp; archived"
-                    if res.get("unsubscribed")
-                    else "Archived from inbox"
+                    if res.get("unsubscribed") and archived > 0
+                    else (
+                        "Unsubscribed"
+                        if res.get("unsubscribed")
+                        else "Archived from inbox"
+                    )
                 )
-                await self.telegram_client.send_message(
-                    chat_id=chat_id,
-                    text=f"🗑️ <b>{status_note}:</b> {sender_lbl} ({archived} email(s) archived).",
-                )
+                msg = f"🗑️ <b>{status_note}:</b> {sender_lbl} ({archived} email(s) archived)."
+                if res.get("archive_permission_missing"):
+                    msg += (
+                        "\n\nℹ️ <i>To enable Gmail auto-archiving, please reconnect Gmail "
+                        "once via /start to grant archive permission.</i>"
+                    )
+                await self.telegram_client.send_message(chat_id=chat_id, text=msg)
             elif action_kind == "nudge":
                 email = await self.email_repo.get_by_id(target_id)
                 if not email or str(email.user_id) != str(link.user_id):
@@ -1001,30 +1008,52 @@ class TelegramService:
                     text="ℹ️ <i>Usage:</i> <code>/find flight ticket</code>",
                 )
                 return
-            qa_svc = InboxQAService(
-                email_repo=self.email_repo,
-                settings=self.settings,
-                auth_service=self.auth_service,
+            status_msg = await self.telegram_client.send_message(
+                chat_id=chat_id,
+                text="🔍 <i>Searching your encrypted emails...</i>",
             )
-            hits = await qa_svc.search_emails(user_id=user_id, query=query, limit=5)
-            if not hits:
+            msg_id = status_msg.get("message_id") if isinstance(status_msg, dict) else None
+            try:
+                qa_svc = InboxQAService(
+                    email_repo=self.email_repo,
+                    settings=self.settings,
+                    auth_service=self.auth_service,
+                )
+                hits = await qa_svc.search_emails(user_id=user_id, query=query, limit=5)
+                if msg_id:
+                    with contextlib.suppress(Exception):
+                        await self.telegram_client.delete_message(
+                            chat_id=chat_id, message_id=int(msg_id)
+                        )
+                if not hits:
+                    await self.telegram_client.send_message(
+                        chat_id=chat_id,
+                        text=f"🔍 No emails found matching <b>{escape_html(query)}</b>.",
+                    )
+                    return
+                lines = [f'🔍 <b>Search Results for "{escape_html(query)}":</b>\n']
+                for h in hits:
+                    date_part = (h.get("received_at") or "")[:10]
+                    lines.append(
+                        f"• <b>{escape_html(h['subject'])}</b>\n"
+                        f"  From: {escape_html(h['sender'])} ({date_part})\n"
+                        f"  <i>{escape_html(h.get('summary') or '')}</i>"
+                    )
                 await self.telegram_client.send_message(
                     chat_id=chat_id,
-                    text=f"🔍 No emails found matching <b>{escape_html(query)}</b>.",
+                    text="\n".join(lines),
                 )
-                return
-            lines = [f"🔍 <b>Search Results for \"{escape_html(query)}\":</b>\n"]
-            for h in hits:
-                date_part = (h.get("received_at") or "")[:10]
-                lines.append(
-                    f"• <b>{escape_html(h['subject'])}</b>\n"
-                    f"  From: {escape_html(h['sender'])} ({date_part})\n"
-                    f"  <i>{escape_html(h.get('summary') or '')}</i>"
+            except Exception as exc:
+                if msg_id:
+                    with contextlib.suppress(Exception):
+                        await self.telegram_client.delete_message(
+                            chat_id=chat_id, message_id=int(msg_id)
+                        )
+                logger.error("telegram_find_failed", query=query, error=str(exc))
+                await self.telegram_client.send_message(
+                    chat_id=chat_id,
+                    text=f"⚠️ <b>Search failed:</b> {escape_html(str(exc))}",
                 )
-            await self.telegram_client.send_message(
-                chat_id=chat_id,
-                text="\n".join(lines),
-            )
 
         elif cmd == "/voice":
             arg = parts[1].strip().lower() if len(parts) > 1 else ""

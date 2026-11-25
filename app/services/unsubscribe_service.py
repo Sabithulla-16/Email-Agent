@@ -136,6 +136,7 @@ class UnsubscribeService:
 
         # Archive all recent messages from this sender for this user
         archived_count = 0
+        archive_permission_missing = False
         all_rows = await self.email_repo.list_newsletters_by_user(user_id=user_id, limit=50)
         target_sender = email.sender_email.lower().strip()
         msg_ids = {
@@ -150,7 +151,11 @@ class UnsubscribeService:
                 await gmail.archive_message(gm_id)
                 archived_count += 1
             except Exception as exc:
-                logger.debug("archive_message_skipped", gmail_msg_id=gm_id, error=str(exc))
+                err_str = str(exc)
+                if "insufficientPermissions" in err_str or "403" in err_str:
+                    archive_permission_missing = True
+                    break
+                logger.debug("archive_message_skipped", gmail_msg_id=gm_id, error=err_str)
 
         return {
             "status": "success",
@@ -158,4 +163,5 @@ class UnsubscribeService:
             "unsubscribed": unsub_method != "none",
             "method": unsub_method,
             "archived_count": archived_count,
+            "archive_permission_missing": archive_permission_missing,
         }
