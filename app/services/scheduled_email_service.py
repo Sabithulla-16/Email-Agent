@@ -176,6 +176,104 @@ class ScheduledEmailService:
         first_line = notes.strip().splitlines()[0][:60]
         return f"Message: {first_line}", notes.strip()
 
+    async def revise_subject_and_body(
+        self,
+        subject: str,
+        body: str,
+        instruction: str = "",
+        tone: str | None = None,
+        api_key: str | None = None,
+    ) -> tuple[str, str]:
+        """Revise an existing scheduled email preview/body with user instruction or tone."""
+        tone_map = {
+            "shorter": "Make it significantly shorter and straight to the point.",
+            "formal": "Make the tone formal, professional, and respectful.",
+            "friendly": "Make the tone warm, friendly, and approachable.",
+            "firm": "Make the tone firm, direct, and assertive.",
+        }
+        directive = tone_map.get(tone or "", "") or instruction.strip()
+        if not directive:
+            return subject, body
+
+        prompt = (
+            "Revise the following email according to the instruction.\n"
+            f"Current Subject: {subject}\n"
+            f"Current Body:\n{body}\n\n"
+            f"Instruction: {directive}\n\n"
+            'Return strictly valid JSON: {"subject": "...", "body": "..."}'
+        )
+        try:
+            raw_json, _ = await self.groq_service.chat_completion_with_fallback(
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=450,
+                api_key=api_key,
+            )
+            cleaned = raw_json.strip()
+            if "```" in cleaned:
+                cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", cleaned, flags=re.DOTALL)
+            parsed = json.loads(cleaned)
+            new_subj = str(parsed.get("subject") or "").strip() or subject
+            new_body = str(parsed.get("body") or "").strip() or body
+            return new_subj, new_body
+        except Exception as exc:
+            logger.debug("schedule_revise_llm_fallback", error=str(exc))
+            return subject, body
+
+    async def get_scheduled_email(
+        self, user_id: UUID | str, scheduled_id: UUID | str
+    ) -> dict[str, Any] | None:
+        """Fetch a single pending scheduled email owned by user_id."""
+        res = await (
+            self.client.table("scheduled_emails")
+            .select("*")
+            .eq("id", str(scheduled_id))
+            .eq("user_id", str(user_id))
+            .execute()
+        )
+        if not res.data:
+            return None
+        return self._decrypt_row(dict(cast(dict[str, Any], res.data[0])))
+
+    async def update_scheduled_email(
+        self,
+        user_id: UUID | str,
+        scheduled_id: UUID | str,
+        recipient: str | None = None,
+        subject: str | None = None,
+        body: str | None = None,
+        scheduled_at: datetime | None = None,
+    ) -> dict[str, Any] | None:
+        """Update encrypted fields or send time on a pending scheduled email."""
+        updates: dict[str, Any] = {}
+        if recipient is not None:
+            updates["recipient_enc"] = self.vault.encrypt_field(recipient)
+        if subject is not None:
+            updates["subject_enc"] = self.vault.encrypt_field(subject)
+        if body is not None:
+            updates["body_enc"] = self.vault.encrypt_field(body)
+        if scheduled_at is not None:
+            sched_utc = (
+                scheduled_at.astimezone(UTC)
+                if scheduled_at.tzinfo
+                else scheduled_at.replace(tzinfo=UTC)
+            )
+            updates["scheduled_at"] = sched_utc.isoformat()
+        if not updates:
+            return await self.get_scheduled_email(user_id, scheduled_id)
+
+        res = await (
+            self.client.table("scheduled_emails")
+            .update(updates)
+            .eq("id", str(scheduled_id))
+            .eq("user_id", str(user_id))
+            .eq("status", "pending")
+            .execute()
+        )
+        if not res.data:
+            return None
+        return self._decrypt_row(dict(cast(dict[str, Any], res.data[0])))
+
     async def create_scheduled_email(
         self,
         user_id: UUID | str,

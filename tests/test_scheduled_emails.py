@@ -12,7 +12,11 @@ from app.services.scheduled_email_service import (
     ScheduledEmailService,
     parse_schedule_time,
 )
-from app.services.telegram_service import _PENDING_SCHEDULE_STATES, TelegramService
+from app.services.telegram_service import (
+    _PENDING_SCHEDULE_EDIT_STATES,
+    _PENDING_SCHEDULE_STATES,
+    TelegramService,
+)
 
 
 def test_parse_schedule_time_ist():
@@ -205,7 +209,115 @@ async def test_telegram_schedule_3_step_flow():
     await svc._handle_message({"chat": {"id": chat_id}, "text": "bob@company.com"})
     assert _PENDING_SCHEDULE_STATES[chat_id]["recipient"] == "bob@company.com"
 
-    # Step 4: user sends timing -> finalizes
+    # Step 4: user sends timing -> enters preview via _finalize_scheduled_email
     await svc._handle_message({"chat": {"id": chat_id}, "text": "in 30m"})
-    assert chat_id not in _PENDING_SCHEDULE_STATES
     svc._finalize_scheduled_email.assert_awaited_once()
+    _PENDING_SCHEDULE_STATES.pop(chat_id, None)
+
+
+@pytest.mark.asyncio
+async def test_schedule_preview_revise_accept_and_manage_edit():
+    chat_id = 444555
+    _PENDING_SCHEDULE_STATES.pop(chat_id, None)
+    _PENDING_SCHEDULE_EDIT_STATES.pop(chat_id, None)
+    user_id = uuid.uuid4()
+    sched_id = uuid.uuid4()
+    now = datetime.now(UTC)
+
+    telegram_repo = MagicMock()
+    telegram_repo.get_link_by_chat_id = AsyncMock(
+        return_value=TelegramLinkRow(
+            user_id=user_id,
+            chat_id=chat_id,
+            is_active=True,
+            linked_at=now,
+            updated_at=now,
+        )
+    )
+    telegram_repo.get_and_clear_pending_interaction = AsyncMock(return_value=None)
+
+    user_repo = MagicMock()
+    user_repo.get_by_id = AsyncMock(
+        return_value=UserRow(
+            id=user_id,
+            google_sub="sub1",
+            email="alice@example.com",
+            name="Alice",
+            timezone="Asia/Kolkata",
+            created_at=now,
+            updated_at=now,
+        )
+    )
+
+    tg_client = MagicMock()
+    tg_client.send_message = AsyncMock(return_value={"message_id": 20})
+    tg_client.edit_message_text = AsyncMock(return_value={"message_id": 20})
+    tg_client.delete_message = AsyncMock(return_value=True)
+
+    svc = TelegramService(
+        telegram_repo=telegram_repo,
+        user_repo=user_repo,
+        email_repo=MagicMock(),
+        draft_repo=MagicMock(),
+        approval_service=MagicMock(),
+        notification_service=MagicMock(),
+        telegram_client=tg_client,
+    )
+
+    with (
+        patch(
+            "app.services.telegram_service.ScheduledEmailService.compose_subject_and_body",
+            new=AsyncMock(return_value=("Initial Subject", "Initial Body")),
+        ),
+        patch(
+            "app.services.telegram_service.ScheduledEmailService.revise_subject_and_body",
+            new=AsyncMock(return_value=("Revised Subject", "Revised Body")),
+        ),
+        patch(
+            "app.services.telegram_service.ScheduledEmailService.create_scheduled_email",
+            new=AsyncMock(return_value={"id": str(sched_id)}),
+        ) as mock_create,
+        patch(
+            "app.services.telegram_service.ScheduledEmailService.update_scheduled_email",
+            new=AsyncMock(return_value={"id": str(sched_id), "recipient": "new@corp.com"}),
+        ) as mock_update,
+    ):
+        # 1. Enter preview
+        await svc._finalize_scheduled_email(
+            chat_id=chat_id,
+            user_id=user_id,
+            recipient="bob@corp.com",
+            notes="Hello",
+            scheduled_at=now + timedelta(hours=1),
+        )
+        assert _PENDING_SCHEDULE_STATES[chat_id]["stage"] == "review"
+
+        # 2. Tap Revise -> sends prompt -> user replies with instruction
+        await svc._handle_callback_query(
+            {"data": "sched_preview:revise", "message": {"chat": {"id": chat_id}, "message_id": 20}}
+        )
+        assert _PENDING_SCHEDULE_STATES[chat_id]["awaiting_revision"] is True
+
+        await svc._handle_message({"chat": {"id": chat_id}, "text": "Make it more concise"})
+        assert _PENDING_SCHEDULE_STATES[chat_id]["subject"] == "Revised Subject"
+
+        # 3. Tap Accept & Schedule -> persists to DB
+        await svc._handle_callback_query(
+            {"data": "sched_preview:accept", "message": {"chat": {"id": chat_id}, "message_id": 20}}
+        )
+        assert chat_id not in _PENDING_SCHEDULE_STATES
+        mock_create.assert_awaited_once()
+
+        # 4. Post-schedule /manage edit recipient
+        await svc._handle_callback_query(
+            {
+                "data": f"sched_edit:recipient:{sched_id}",
+                "message": {"chat": {"id": chat_id}, "message_id": 21},
+            }
+        )
+        assert chat_id in _PENDING_SCHEDULE_EDIT_STATES
+
+        await svc._handle_message({"chat": {"id": chat_id}, "text": "new@corp.com"})
+        assert chat_id not in _PENDING_SCHEDULE_EDIT_STATES
+        mock_update.assert_awaited_once()
+

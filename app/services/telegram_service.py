@@ -45,6 +45,7 @@ logger = structlog.get_logger("app.services.telegram")
 _START_MESSAGE_IDS: dict[int, int] = {}
 _PENDING_COMPOSE_STATES: dict[int, dict[str, Any]] = {}
 _PENDING_SCHEDULE_STATES: dict[int, dict[str, Any]] = {}
+_PENDING_SCHEDULE_EDIT_STATES: dict[int, dict[str, Any]] = {}
 EMAIL_REGEX = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+")
 
 
@@ -170,11 +171,13 @@ class TelegramService:
         if not token or not chat_id:
             return
 
-        # Direct per-user action callbacks (unsub:<email_id>, nudge:<email_id>, cancel_sched:<id>)
+        # Direct per-user action callbacks (unsub, nudge, cancel_sched, sched_preview, sched_edit)
         if (
             token.startswith("unsub:")
             or token.startswith("nudge:")
             or token.startswith("cancel_sched:")
+            or token.startswith("sched_preview:")
+            or token.startswith("sched_edit:")
         ):
             link = await self.telegram_repo.get_link_by_chat_id(chat_id)
             if not link:
@@ -182,6 +185,46 @@ class TelegramService:
                     chat_id=chat_id,
                     text="✕ Your Telegram account is not linked.",
                 )
+                return
+            if token.startswith("sched_preview:"):
+                await self._handle_schedule_preview_callback(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    user_id=link.user_id,
+                    action=token.split(":", 1)[1],
+                )
+                return
+            if token.startswith("sched_edit:"):
+                parts = token.split(":", 2)
+                if len(parts) == 3:
+                    _, field_kind, sched_id = parts
+                    _PENDING_SCHEDULE_EDIT_STATES[chat_id] = {
+                        "user_id": link.user_id,
+                        "scheduled_id": sched_id,
+                        "field": field_kind,
+                        "created_at": time.time(),
+                    }
+                    prompts = {
+                        "content": (
+                            "✎ <b>Edit Scheduled Content</b>\n\n"
+                            "Reply with your new message/notes or revision instruction "
+                            "(or /cancel to abort):"
+                        ),
+                        "recipient": (
+                            "✎ <b>Edit Scheduled Recipient</b>\n\n"
+                            "Reply with the new recipient email address "
+                            "(e.g. <code>colleague@company.com</code>, or /cancel to abort):"
+                        ),
+                        "time": (
+                            "◷ <b>Reschedule Send Time (IST)</b>\n\n"
+                            "Reply with the new time (e.g. <code>in 45m</code>, "
+                            "<code>21:30</code>, <code>tomorrow 09:00</code>, or /cancel):"
+                        ),
+                    }
+                    await self.telegram_client.send_message(
+                        chat_id=chat_id,
+                        text=prompts.get(field_kind, "Reply with the updated value:"),
+                    )
                 return
             action_kind, target_id = token.split(":", 1)
             if action_kind == "cancel_sched":
@@ -390,9 +433,23 @@ class TelegramService:
                 )
                 return
 
-        # 3.5 In-flight /schedule 3-step state (content -> recipient -> timing)
+        # 3.4 In-flight post-schedule edit state (/manage -> edit content/recipient/time)
+        edit_state = _PENDING_SCHEDULE_EDIT_STATES.get(chat_id)
+        if edit_state and (time.time() - edit_state.get("created_at", 0) < 900):
+            await self._apply_scheduled_edit(chat_id=chat_id, edit_state=edit_state, text=text)
+            return
+
+        # 3.5 In-flight /schedule 3-step & preview state (content -> recipient -> timing -> review)
         sched_state = _PENDING_SCHEDULE_STATES.get(chat_id)
         if sched_state and (time.time() - sched_state.get("created_at", 0) < 900):
+            if sched_state.get("stage") == "review" and sched_state.get("awaiting_revision"):
+                sched_state["awaiting_revision"] = False
+                await self._revise_schedule_preview(
+                    chat_id=chat_id,
+                    user_id=sched_state["user_id"],
+                    instruction=text,
+                )
+                return
             if "content" not in sched_state:
                 sched_state["content"] = text
                 await self.telegram_client.send_message(
@@ -446,7 +503,6 @@ class TelegramService:
                     )
                     return
 
-                _PENDING_SCHEDULE_STATES.pop(chat_id, None)
                 await self._finalize_scheduled_email(
                     chat_id=chat_id,
                     user_id=sched_state["user_id"],
@@ -825,8 +881,9 @@ class TelegramService:
                 await self.telegram_client.send_message(
                     chat_id=chat_id, text="✕ Draft creation cancelled."
                 )
-            elif chat_id in _PENDING_SCHEDULE_STATES:
+            elif chat_id in _PENDING_SCHEDULE_STATES or chat_id in _PENDING_SCHEDULE_EDIT_STATES:
                 _PENDING_SCHEDULE_STATES.pop(chat_id, None)
+                _PENDING_SCHEDULE_EDIT_STATES.pop(chat_id, None)
                 await self.telegram_client.send_message(
                     chat_id=chat_id, text="✕ Email scheduling cancelled."
                 )
@@ -864,7 +921,7 @@ class TelegramService:
                     ),
                 )
 
-        elif cmd == "/scheduled":
+        elif cmd in ("/scheduled", "/manage"):
             await self._send_scheduled_list(chat_id, user_id)
 
         elif cmd == "/pending":
@@ -1297,8 +1354,9 @@ class TelegramService:
                     "• <code>/create &lt;to&gt; &lt;notes&gt;</code> — "
                     "Draft a new email for review\n"
                     "• <code>/schedule</code> — "
-                    "Guided 3-step email scheduler (content, recipient, time)\n"
-                    "• <code>/scheduled</code> — View or cancel pending scheduled emails\n"
+                    "Guided 3-step email scheduler with preview &amp; revise\n"
+                    "• <code>/manage</code> (or <code>/scheduled</code>) — "
+                    "Edit, reschedule, or cancel pending emails\n"
                     "• <code>/pending</code> — Review and approve waiting reply drafts\n"
                     "• <code>/cancel</code> — Cancel an active /create or /schedule flow\n\n"
                     "<b>▸ Inbox Intelligence</b>\n"
@@ -1534,12 +1592,10 @@ class TelegramService:
         scheduled_at: datetime,
         user_tz: str = "Asia/Kolkata",
     ) -> None:
-        """Compose, encrypt, and store a scheduled email, then confirm to the user."""
-        import zoneinfo
-
+        """Compose a preview for the scheduled email and ask user to Accept, Revise, or Cancel."""
         status_msg = await self.telegram_client.send_message(
             chat_id=chat_id,
-            text="◷ <i>Preparing and encrypting your scheduled email...</i>",
+            text="◷ <i>Composing scheduled email preview...</i>",
         )
         msg_id = status_msg.get("message_id") if isinstance(status_msg, dict) else None
         try:
@@ -1558,47 +1614,27 @@ class TelegramService:
                 user_name=user.name if user else None,
                 api_key=user_groq_key,
             )
-            created = await sched_svc.create_scheduled_email(
-                user_id=user_id,
-                recipient=recipient,
-                subject=subject,
-                body=body,
-                scheduled_at=scheduled_at,
-            )
             if msg_id:
                 with contextlib.suppress(Exception):
                     await self.telegram_client.delete_message(
                         chat_id=chat_id, message_id=int(msg_id)
                     )
 
-            try:
-                tz = zoneinfo.ZoneInfo(user_tz)
-            except Exception:
-                tz = zoneinfo.ZoneInfo("Asia/Kolkata")
-            local_time_str = scheduled_at.astimezone(tz).strftime("%Y-%m-%d %H:%M %Z")
-
-            await self.telegram_client.send_message(
-                chat_id=chat_id,
-                text=(
-                    "✓ <b>Email Scheduled</b>\n\n"
-                    f"• <b>To:</b> <code>{escape_html(recipient)}</code>\n"
-                    f"• <b>Send At:</b> <code>{escape_html(local_time_str)}</code>\n"
-                    f"• <b>Subject:</b> {escape_html(subject)}\n\n"
-                    f"<blockquote>{escape_html(body)}</blockquote>\n\n"
-                    "<i>Use /scheduled to view or cancel pending emails.</i>"
-                ),
-                reply_markup={
-                    "inline_keyboard": [
-                        [
-                            {
-                                "text": "✕ Cancel Scheduled Email",
-                                "callback_data": f"cancel_sched:{created['id']}",
-                            }
-                        ]
-                    ]
-                },
-            )
+            _PENDING_SCHEDULE_STATES[chat_id] = {
+                "user_id": user_id,
+                "stage": "review",
+                "recipient": recipient,
+                "notes": notes,
+                "subject": subject,
+                "body": body,
+                "scheduled_at": scheduled_at,
+                "user_tz": user_tz,
+                "awaiting_revision": False,
+                "created_at": time.time(),
+            }
+            await self._render_schedule_preview(chat_id=chat_id, message_id=None)
         except Exception as exc:
+            _PENDING_SCHEDULE_STATES.pop(chat_id, None)
             if msg_id:
                 with contextlib.suppress(Exception):
                     await self.telegram_client.delete_message(
@@ -1607,11 +1643,309 @@ class TelegramService:
             logger.error("finalize_scheduled_email_failed", error=str(exc))
             await self.telegram_client.send_message(
                 chat_id=chat_id,
-                text=f"✕ <b>Could not schedule email:</b> {escape_html(str(exc))}",
+                text=f"✕ <b>Could not compose scheduled email:</b> {escape_html(str(exc))}",
+            )
+
+    async def _render_schedule_preview(
+        self, chat_id: int, message_id: int | None = None
+    ) -> None:
+        """Render or update the pre-schedule preview card with Accept/Revise/Cancel/Tone."""
+        import zoneinfo
+
+        state = _PENDING_SCHEDULE_STATES.get(chat_id)
+        if not state:
+            return
+        try:
+            tz = zoneinfo.ZoneInfo(state.get("user_tz", "Asia/Kolkata"))
+        except Exception:
+            tz = zoneinfo.ZoneInfo("Asia/Kolkata")
+        local_time_str = state["scheduled_at"].astimezone(tz).strftime("%Y-%m-%d %H:%M %Z")
+
+        text = (
+            "◈ <b>Scheduled Email Preview</b>\n\n"
+            f"• <b>To:</b> <code>{escape_html(state['recipient'])}</code>\n"
+            f"• <b>Send At:</b> <code>{escape_html(local_time_str)}</code>\n"
+            f"• <b>Subject:</b> {escape_html(state['subject'])}\n\n"
+            f"<blockquote>{escape_html(state['body'])}</blockquote>"
+        )
+        keyboard = {
+            "inline_keyboard": [
+                [
+                    {"text": "✓ Accept & Schedule", "callback_data": "sched_preview:accept"},
+                    {"text": "✎ Revise", "callback_data": "sched_preview:revise"},
+                    {"text": "✕ Cancel", "callback_data": "sched_preview:cancel"},
+                ],
+                [
+                    {"text": "▪ Shorter", "callback_data": "sched_preview:tone:shorter"},
+                    {"text": "▪ Formal", "callback_data": "sched_preview:tone:formal"},
+                    {"text": "▪ Friendly", "callback_data": "sched_preview:tone:friendly"},
+                    {"text": "▪ Direct", "callback_data": "sched_preview:tone:firm"},
+                ],
+            ]
+        }
+        if message_id:
+            await self.telegram_client.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=text,
+                reply_markup=keyboard,
+            )
+        else:
+            await self.telegram_client.send_message(
+                chat_id=chat_id,
+                text=text,
+                reply_markup=keyboard,
+            )
+
+    async def _handle_schedule_preview_callback(
+        self,
+        chat_id: int,
+        message_id: int | None,
+        user_id: UUID | str,
+        action: str,
+    ) -> None:
+        """Handle Accept, Revise, Cancel, or Tone buttons on a scheduled email preview."""
+        import zoneinfo
+
+        state = _PENDING_SCHEDULE_STATES.get(chat_id)
+        if not state or state.get("stage") != "review":
+            await self.telegram_client.send_message(
+                chat_id=chat_id,
+                text="› This preview has expired. Use /schedule to start a new one.",
+            )
+            return
+
+        if action == "cancel":
+            _PENDING_SCHEDULE_STATES.pop(chat_id, None)
+            if message_id:
+                await self.telegram_client.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text="✕ <b>Scheduled Email Cancelled.</b>",
+                    reply_markup=None,
+                )
+            else:
+                await self.telegram_client.send_message(
+                    chat_id=chat_id, text="✕ <b>Scheduled Email Cancelled.</b>"
+                )
+            return
+
+        if action == "revise":
+            state["awaiting_revision"] = True
+            await self.telegram_client.send_message(
+                chat_id=chat_id,
+                text="✎ <b>Reply with your revision instructions</b> (or /cancel to abort):",
+            )
+            return
+
+        if action.startswith("tone:"):
+            tone_name = action.split(":", 1)[1]
+            await self._revise_schedule_preview(
+                chat_id=chat_id,
+                user_id=user_id,
+                tone=tone_name,
+                message_id=message_id,
+            )
+            return
+
+        if action == "accept":
+            _PENDING_SCHEDULE_STATES.pop(chat_id, None)
+            sched_svc = ScheduledEmailService(
+                settings=self.settings, groq_service=self.groq_service
+            )
+            created = await sched_svc.create_scheduled_email(
+                user_id=user_id,
+                recipient=state["recipient"],
+                subject=state["subject"],
+                body=state["body"],
+                scheduled_at=state["scheduled_at"],
+            )
+            try:
+                tz = zoneinfo.ZoneInfo(state.get("user_tz", "Asia/Kolkata"))
+            except Exception:
+                tz = zoneinfo.ZoneInfo("Asia/Kolkata")
+            local_time_str = state["scheduled_at"].astimezone(tz).strftime("%Y-%m-%d %H:%M %Z")
+
+            confirm_text = (
+                "✓ <b>Email Scheduled</b>\n\n"
+                f"• <b>To:</b> <code>{escape_html(state['recipient'])}</code>\n"
+                f"• <b>Send At:</b> <code>{escape_html(local_time_str)}</code>\n"
+                f"• <b>Subject:</b> {escape_html(state['subject'])}\n\n"
+                f"<blockquote>{escape_html(state['body'])}</blockquote>\n\n"
+                "<i>Use /manage anytime to edit, reschedule, or cancel.</i>"
+            )
+            confirm_markup = {
+                "inline_keyboard": [
+                    [
+                        {
+                            "text": "✎ Edit Content",
+                            "callback_data": f"sched_edit:content:{created['id']}",
+                        },
+                        {
+                            "text": "◷ Reschedule",
+                            "callback_data": f"sched_edit:time:{created['id']}",
+                        },
+                        {
+                            "text": "✕ Cancel",
+                            "callback_data": f"cancel_sched:{created['id']}",
+                        },
+                    ]
+                ]
+            }
+            if message_id:
+                await self.telegram_client.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text=confirm_text,
+                    reply_markup=confirm_markup,
+                )
+            else:
+                await self.telegram_client.send_message(
+                    chat_id=chat_id,
+                    text=confirm_text,
+                    reply_markup=confirm_markup,
+                )
+
+    async def _revise_schedule_preview(
+        self,
+        chat_id: int,
+        user_id: UUID | str,
+        instruction: str = "",
+        tone: str | None = None,
+        message_id: int | None = None,
+    ) -> None:
+        """Revise the in-flight scheduled email preview using Groq LLM."""
+        state = _PENDING_SCHEDULE_STATES.get(chat_id)
+        if not state:
+            return
+        user_groq_key: str | None = None
+        if self.auth_service and hasattr(self.auth_service, "get_user_groq_api_key"):
+            with contextlib.suppress(Exception):
+                user_groq_key = await self.auth_service.get_user_groq_api_key(user_id)
+
+        sched_svc = ScheduledEmailService(
+            settings=self.settings, groq_service=self.groq_service
+        )
+        new_subj, new_body = await sched_svc.revise_subject_and_body(
+            subject=state["subject"],
+            body=state["body"],
+            instruction=instruction,
+            tone=tone,
+            api_key=user_groq_key,
+        )
+        state["subject"] = new_subj
+        state["body"] = new_body
+        state["created_at"] = time.time()
+        await self._render_schedule_preview(chat_id=chat_id, message_id=message_id)
+
+    async def _apply_scheduled_edit(
+        self, chat_id: int, edit_state: dict[str, Any], text: str
+    ) -> None:
+        """Apply post-schedule edit (content, recipient, or time) to an existing scheduled email."""
+        import zoneinfo
+
+        user_id = edit_state["user_id"]
+        sched_id = edit_state["scheduled_id"]
+        field = edit_state["field"]
+        sched_svc = ScheduledEmailService(
+            settings=self.settings, groq_service=self.groq_service
+        )
+
+        if field == "recipient":
+            found_email = extract_email_address(text)
+            if not found_email:
+                await self.telegram_client.send_message(
+                    chat_id=chat_id,
+                    text="✕ <i>Please enter a valid email address, or /cancel to abort.</i>",
+                )
+                return
+            _PENDING_SCHEDULE_EDIT_STATES.pop(chat_id, None)
+            updated = await sched_svc.update_scheduled_email(
+                user_id=user_id, scheduled_id=sched_id, recipient=found_email
+            )
+            msg = (
+                f"✓ <b>Recipient updated</b> to <code>{escape_html(found_email)}</code>."
+                if updated
+                else "✕ Scheduled email was not found or already sent."
+            )
+            await self.telegram_client.send_message(chat_id=chat_id, text=msg)
+            return
+
+        if field == "time":
+            user_obj = await self.user_repo.get_by_id(user_id)
+            user_tz = (
+                user_obj.timezone
+                if user_obj and user_obj.timezone and user_obj.timezone != "UTC"
+                else "Asia/Kolkata"
+            )
+            parsed_dt = parse_schedule_time(text, user_timezone=user_tz)
+            if not parsed_dt:
+                await self.telegram_client.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        "✕ <i>Could not understand that time or it is in the past.</i>\n"
+                        "Try <code>in 45m</code>, <code>21:30</code>, "
+                        "<code>tomorrow 09:00</code>, or /cancel."
+                    ),
+                )
+                return
+            _PENDING_SCHEDULE_EDIT_STATES.pop(chat_id, None)
+            updated = await sched_svc.update_scheduled_email(
+                user_id=user_id, scheduled_id=sched_id, scheduled_at=parsed_dt
+            )
+            try:
+                tz = zoneinfo.ZoneInfo(user_tz)
+            except Exception:
+                tz = zoneinfo.ZoneInfo("Asia/Kolkata")
+            local_str = parsed_dt.astimezone(tz).strftime("%Y-%m-%d %H:%M %Z")
+            msg = (
+                f"✓ <b>Rescheduled</b> to <code>{escape_html(local_str)}</code>."
+                if updated
+                else "✕ Scheduled email was not found or already sent."
+            )
+            await self.telegram_client.send_message(chat_id=chat_id, text=msg)
+            return
+
+        if field == "content":
+            _PENDING_SCHEDULE_EDIT_STATES.pop(chat_id, None)
+            existing = await sched_svc.get_scheduled_email(user_id=user_id, scheduled_id=sched_id)
+            if not existing or existing.get("status") != "pending":
+                await self.telegram_client.send_message(
+                    chat_id=chat_id, text="✕ Scheduled email was not found or already sent."
+                )
+                return
+            user_groq_key: str | None = None
+            if self.auth_service and hasattr(self.auth_service, "get_user_groq_api_key"):
+                with contextlib.suppress(Exception):
+                    user_groq_key = await self.auth_service.get_user_groq_api_key(user_id)
+            new_subj, new_body = await sched_svc.revise_subject_and_body(
+                subject=existing["subject"],
+                body=existing["body"],
+                instruction=text,
+                api_key=user_groq_key,
+            )
+            updated = await sched_svc.update_scheduled_email(
+                user_id=user_id,
+                scheduled_id=sched_id,
+                subject=new_subj,
+                body=new_body,
+            )
+            if not updated:
+                await self.telegram_client.send_message(
+                    chat_id=chat_id, text="✕ Scheduled email was not found or already sent."
+                )
+                return
+            await self.telegram_client.send_message(
+                chat_id=chat_id,
+                text=(
+                    "✓ <b>Scheduled Email Updated</b>\n\n"
+                    f"• <b>Subject:</b> {escape_html(new_subj)}\n\n"
+                    f"<blockquote>{escape_html(new_body)}</blockquote>"
+                ),
             )
 
     async def _send_scheduled_list(self, chat_id: int, user_id: UUID | str) -> None:
-        """Display pending scheduled emails with cancel buttons."""
+        """Display pending scheduled emails with Edit Content, Recipient, Time, and Cancel."""
         import zoneinfo
 
         try:
@@ -1633,35 +1967,51 @@ class TelegramService:
                 await self.telegram_client.send_message(
                     chat_id=chat_id,
                     text=(
-                        "◷ <b>Scheduled Emails</b>\n\n"
+                        "◷ <b>Manage Scheduled Emails</b>\n\n"
                         "› No pending scheduled emails.\n"
                         "<i>Use /schedule to schedule one.</i>"
                     ),
                 )
                 return
 
-            lines = ["◷ <b>Pending Scheduled Emails</b>\n"]
-            buttons: list[list[dict[str, str]]] = []
             for item in items:
                 dt_raw = datetime.fromisoformat(str(item["scheduled_at"]).replace("Z", "+00:00"))
                 dt_str = dt_raw.astimezone(tz).strftime("%d %b %H:%M %Z")
-                lines.append(
-                    f"• <b>{escape_html(item['subject'])}</b>\n"
-                    f"  To: <code>{escape_html(item['recipient'])}</code> • {dt_str}"
+                card_text = (
+                    f"◷ <b>{escape_html(item['subject'])}</b>\n"
+                    f"• <b>To:</b> <code>{escape_html(item['recipient'])}</code>\n"
+                    f"• <b>Send At:</b> <code>{escape_html(dt_str)}</code>\n\n"
+                    f"<blockquote>{escape_html(item['body'][:400])}</blockquote>"
                 )
-                buttons.append(
-                    [
-                        {
-                            "text": f"✕ Cancel: {item['subject'][:24]}",
-                            "callback_data": f"cancel_sched:{item['id']}",
-                        }
+                card_markup = {
+                    "inline_keyboard": [
+                        [
+                            {
+                                "text": "✎ Content",
+                                "callback_data": f"sched_edit:content:{item['id']}",
+                            },
+                            {
+                                "text": "✎ Recipient",
+                                "callback_data": f"sched_edit:recipient:{item['id']}",
+                            },
+                        ],
+                        [
+                            {
+                                "text": "◷ Reschedule",
+                                "callback_data": f"sched_edit:time:{item['id']}",
+                            },
+                            {
+                                "text": "✕ Cancel",
+                                "callback_data": f"cancel_sched:{item['id']}",
+                            },
+                        ],
                     ]
+                }
+                await self.telegram_client.send_message(
+                    chat_id=chat_id,
+                    text=card_text,
+                    reply_markup=card_markup,
                 )
-            await self.telegram_client.send_message(
-                chat_id=chat_id,
-                text="\n".join(lines),
-                reply_markup={"inline_keyboard": buttons},
-            )
         except Exception as exc:
             logger.error("send_scheduled_list_failed", error=str(exc))
             await self.telegram_client.send_message(
