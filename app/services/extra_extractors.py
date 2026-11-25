@@ -7,6 +7,7 @@ from uuid import UUID
 
 import structlog
 
+from app.core.vault import get_token_vault
 from app.db.client import get_supabase
 from app.models.db import EmailRow
 
@@ -102,11 +103,12 @@ class ExtraExtractorsService:
 
     async def update_contact_history(self, user_id: UUID | str, email: EmailRow) -> None:
         """Update contact interaction frequency and last contacted timestamp."""
+        vault = get_token_vault()
         now_iso = datetime.now(UTC).isoformat()
         payload = {
             "user_id": str(user_id),
-            "email": email.sender_email.lower().strip(),
-            "name": email.sender,
+            "email": vault.blind_index(email.sender_email),
+            "name": vault.encrypt_field(email.sender),
             "last_contacted_at": now_iso,
             "updated_at": now_iso,
         }

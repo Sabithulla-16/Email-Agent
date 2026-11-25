@@ -259,6 +259,47 @@ class TelegramClient:
         """Fetch bot metadata (id, username, first_name)."""
         return await self._post_request("getMe", {})
 
+    async def send_voice(
+        self,
+        chat_id: int,
+        audio_bytes: bytes,
+        caption: str | None = None,
+        filename: str = "briefing.mp3",
+    ) -> dict[str, Any] | None:
+        """Send an audio voice note to Telegram chat using sendVoice multipart upload."""
+        if not audio_bytes:
+            return None
+        await self._enforce_rate_limit(chat_id)
+        url = f"{self.base_url}/sendVoice"
+        data_fields: dict[str, str] = {"chat_id": str(chat_id)}
+        if caption:
+            data_fields["caption"] = caption[:1024]
+            data_fields["parse_mode"] = "HTML"
+
+        try:
+            async with httpx.AsyncClient(
+                verify=self._ssl_ctx,
+                timeout=20.0,
+                headers={"Connection": "close"},
+            ) as client:
+                resp = await client.post(
+                    url,
+                    data=data_fields,
+                    files={"voice": (filename, audio_bytes, "audio/mpeg")},
+                )
+                if resp.status_code == 403:
+                    if self.telegram_repo:
+                        await self.telegram_repo.deactivate_chat(chat_id)
+                    return None
+                resp_json = resp.json()
+                if not resp_json.get("ok"):
+                    logger.error("telegram_send_voice_error", data=resp_json)
+                    return None
+                return resp_json.get("result")
+        except Exception as exc:
+            logger.warning("telegram_send_voice_failed", chat_id=chat_id, error=str(exc))
+            return None
+
     async def get_file(self, file_id: str) -> dict[str, Any] | None:
         """Get metadata for a Telegram file."""
         return await self._post_request("getFile", {"file_id": file_id})

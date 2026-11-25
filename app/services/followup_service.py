@@ -7,6 +7,7 @@ from uuid import UUID
 
 import structlog
 
+from app.core.vault import get_token_vault
 from app.db.client import get_supabase
 
 logger = structlog.get_logger("app.services.followup")
@@ -52,24 +53,31 @@ class FollowupService:
         now = datetime.now(UTC)
         deadline = (now + timedelta(days=days_due)).date()
 
+        vault = get_token_vault()
         payload = {
             "user_id": str(user_id),
             "email_id": str(email_id) if email_id else None,
-            "promise": promise_text,
-            "promised_to": "Recipient",
+            "promise": vault.encrypt_field(promise_text),
+            "promised_to": vault.encrypt_field("Recipient"),
             "due_date": deadline.isoformat(),
             "status": "open",
             "created_at": now.isoformat(),
         }
         try:
             res = await self.client.table("commitments").insert(payload).execute()
-            return cast(dict[str, Any], res.data[0]) if res.data else None
+            if res.data:
+                row = dict(cast(dict[str, Any], res.data[0]))
+                row["promise"] = vault.decrypt_field(row.get("promise"))
+                row["promised_to"] = vault.decrypt_field(row.get("promised_to"))
+                return row
+            return None
         except Exception as exc:
             logger.debug("register_commitment_failed", error=str(exc))
             return None
 
     async def list_open_commitments(self, user_id: UUID | str) -> list[dict[str, Any]]:
         """List open commitments for a user."""
+        vault = get_token_vault()
         try:
             res = await (
                 self.client.table("commitments")
@@ -79,7 +87,87 @@ class FollowupService:
                 .order("created_at", desc=True)
                 .execute()
             )
-            return cast(list[dict[str, Any]], res.data or [])
+            rows = []
+            for item in res.data or []:
+                row = dict(cast(dict[str, Any], item))
+                row["promise"] = vault.decrypt_field(row.get("promise"))
+                row["promised_to"] = vault.decrypt_field(row.get("promised_to"))
+                rows.append(row)
+            return rows
         except Exception as exc:
             logger.debug("list_commitments_failed", error=str(exc))
             return []
+
+    async def get_radar_summary(
+        self,
+        user_id: UUID | str,
+        email_repo: Any | None = None,
+        limit: int = 5,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Compile 'People waiting on you' and 'People you are waiting on' for user_id."""
+        waiting_on_you: list[dict[str, Any]] = []
+        waiting_on_others: list[dict[str, Any]] = []
+
+        if email_repo is not None:
+            try:
+                recent_emails = await email_repo.list_by_user(user_id=user_id, limit=25)
+                for em in recent_emails:
+                    analysis = await email_repo.get_analysis(em.id)
+                    if analysis and analysis.needs_reply:
+                        waiting_on_you.append(
+                            {
+                                "email_id": str(em.id),
+                                "sender": em.sender,
+                                "subject": em.subject,
+                                "priority": str(analysis.priority),
+                                "summary": analysis.summary,
+                            }
+                        )
+                        if len(waiting_on_you) >= limit:
+                            break
+            except Exception as exc:
+                logger.debug("radar_waiting_on_you_failed", error=str(exc))
+
+        # Commitments (promises you made) and unresolved followups
+        commitments = await self.list_open_commitments(user_id)
+        for c in commitments[:limit]:
+            waiting_on_others.append(
+                {
+                    "type": "commitment",
+                    "id": str(c.get("id", "")),
+                    "label": c.get("promise", ""),
+                    "target": c.get("promised_to", "Recipient"),
+                    "due_date": str(c.get("due_date") or "Pending"),
+                }
+            )
+
+        vault = get_token_vault()
+        try:
+            res = await (
+                self.client.table("followups")
+                .select("*")
+                .eq("user_id", str(user_id))
+                .eq("resolved", False)
+                .order("due_at", desc=False)
+                .limit(limit)
+                .execute()
+            )
+            for item in res.data or []:
+                row = dict(cast(dict[str, Any], item))
+                waiting_on_others.append(
+                    {
+                        "type": "followup",
+                        "id": str(row.get("id", "")),
+                        "email_id": str(row.get("email_id") or ""),
+                        "label": vault.decrypt_field(row.get("subject")) or "Follow-up",
+                        "target": vault.decrypt_field(row.get("recipient")) or "",
+                        "due_date": str(row.get("due_at") or "Pending")[:10],
+                    }
+                )
+        except Exception as exc:
+            logger.debug("radar_followups_failed", error=str(exc))
+
+        return {
+            "waiting_on_you": waiting_on_you[:limit],
+            "waiting_on_others": waiting_on_others[:limit],
+        }

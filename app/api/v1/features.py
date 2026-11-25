@@ -109,6 +109,32 @@ async def inbox_qa(
     return await service.answer_question(user_id=current_user.id, query=q)
 
 
+@router.get("/search")
+async def search_emails(
+    q: Annotated[str, Query(min_length=2, description="Search query")],
+    current_user: Annotated[UserRow, Depends(get_current_user)],
+    email_repo: Annotated[EmailRepo, Depends(get_email_repo)],
+    limit: int = 5,
+) -> dict[str, Any]:
+    """Encrypted-safe search over the current user's email archive."""
+    check_feature_flag(current_user, "inbox_qa")
+    service = InboxQAService(email_repo=email_repo)
+    results = await service.search_emails(user_id=current_user.id, query=q, limit=limit)
+    return {"query": q, "results": results}
+
+
+@router.get("/radar")
+async def decision_radar(
+    current_user: Annotated[UserRow, Depends(get_current_user)],
+    email_repo: Annotated[EmailRepo, Depends(get_email_repo)],
+) -> dict[str, Any]:
+    """Return Decision & Commitment Radar for the current user."""
+    check_feature_flag(current_user, "followups")
+    return await FollowupService().get_radar_summary(
+        user_id=current_user.id, email_repo=email_repo
+    )
+
+
 # -----------------------------------------------------------------------------
 # Smart Actions & Meeting Extraction (Flag: smart_actions)
 # -----------------------------------------------------------------------------

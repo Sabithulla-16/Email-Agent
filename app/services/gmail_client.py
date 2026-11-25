@@ -125,3 +125,22 @@ class GmailClient:
         except HttpError as err:
             logger.error("gmail_send_message_failed", error=str(err))
             raise ExternalServiceError(f"Gmail message send failed: {err}") from err
+
+    async def archive_message(self, message_id: str) -> dict[str, Any]:
+        """Remove INBOX label from a Gmail message to archive it."""
+
+        def _sync_archive() -> dict[str, Any]:
+            service = self._get_service()
+            return cast(
+                dict[str, Any],
+                service.users()
+                .messages()
+                .modify(userId="me", id=message_id, body={"removeLabelIds": ["INBOX"]})
+                .execute(),
+            )
+
+        try:
+            return await asyncio.to_thread(_sync_archive)
+        except HttpError as err:
+            logger.error("gmail_archive_message_failed", msg_id=message_id, error=str(err))
+            raise ExternalServiceError(f"Gmail archive message failed: {err}") from err

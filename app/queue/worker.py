@@ -17,7 +17,11 @@ from app.db.repos.user_repo import UserRepo
 from app.models.db import UserUpdate
 from app.services.approval_service import ApprovalService
 from app.services.auth_service import AuthService
-from app.services.digest_service import DigestService, compute_next_digest_time
+from app.services.digest_service import (
+    DEFAULT_DIGEST_SLOTS,
+    DigestService,
+    compute_next_digest_time,
+)
 from app.services.groq_service import GroqService
 from app.services.notification_service import NotificationService
 from app.services.sync_service import SyncService
@@ -67,6 +71,7 @@ async def startup(ctx: dict[str, Any]) -> None:
         email_repo=email_repo,
         draft_repo=draft_repo,
         telegram_repo=telegram_repo,
+        auth_service=auth_svc,
         settings=settings,
     )
 
@@ -210,19 +215,21 @@ async def scheduler_cron_job(ctx: dict[str, Any]) -> dict[str, Any]:
     now = datetime.now(UTC)
 
     for user in due_users:
-        # 1. Calculate next wall-clock digest time in user timezone
+        # 1. Calculate next wall-clock digest slot (9 AM / 3 PM / 9 PM) in user timezone
+        user_tz = user.timezone if user.timezone and user.timezone != "UTC" else "Asia/Kolkata"
         next_digest = compute_next_digest_time(
             digest_time=user.digest_time,
-            user_timezone=user.timezone,
+            user_timezone=user_tz,
             now=now,
+            digest_slots=DEFAULT_DIGEST_SLOTS,
         )
         await user_repo.update_user(
             user.id,
             UserUpdate(next_digest_at=next_digest),
         )
 
-        # 2. Enqueue digest job with deterministic job ID
-        digest_job_id = f"digest_{user.id}_{now.strftime('%Y%m%d')}"
+        # 2. Enqueue digest job with slot-specific deterministic job ID
+        digest_job_id = f"digest_{user.id}_{now.strftime('%Y%m%d%H%M')}"
         if redis:
             await redis.enqueue_job(
                 "run_user_digest",

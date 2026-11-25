@@ -18,7 +18,7 @@ from app.db.repos.draft_repo import DraftRepo
 from app.db.repos.email_repo import EmailRepo
 from app.db.repos.telegram_repo import TelegramRepo
 from app.db.repos.user_repo import UserRepo
-from app.models.db import DraftStatus
+from app.models.db import DraftStatus, UserUpdate
 from app.queue.redis import get_redis
 from app.services.approval_service import ApprovalService
 from app.services.auth_service import AuthService
@@ -29,6 +29,12 @@ from app.services.inbox_qa import InboxQAService
 from app.services.notification_service import NotificationService
 from app.services.scheduler_runner import run_direct_sync_cycle
 from app.services.telegram_client import TelegramClient, escape_html
+from app.services.unsubscribe_service import UnsubscribeService
+from app.services.voice_service import (
+    VOICE_PRESETS,
+    is_voice_enabled,
+    resolve_voice_name,
+)
 
 logger = structlog.get_logger("app.services.telegram")
 
@@ -157,6 +163,52 @@ class TelegramService:
         message_id = query.get("message", {}).get("message_id")
 
         if not token or not chat_id:
+            return
+
+        # Direct per-user action callbacks (unsub:<email_id>, nudge:<email_id>)
+        if token.startswith("unsub:") or token.startswith("nudge:"):
+            link = await self.telegram_repo.get_link_by_chat_id(chat_id)
+            if not link:
+                await self.telegram_client.send_message(
+                    chat_id=chat_id,
+                    text="⚠️ Your Telegram account is not linked.",
+                )
+                return
+            action_kind, target_id = token.split(":", 1)
+            if action_kind == "unsub":
+                auth_svc = self.auth_service or AuthService(
+                    user_repo=self.user_repo, settings=self.settings
+                )
+                unsub_svc = UnsubscribeService(
+                    email_repo=self.email_repo, auth_service=auth_svc
+                )
+                res = await unsub_svc.unsubscribe_and_archive(
+                    user_id=link.user_id, email_id=target_id
+                )
+                sender_lbl = escape_html(str(res.get("sender") or "Sender"))
+                archived = res.get("archived_count", 0)
+                status_note = (
+                    "Unsubscribed &amp; archived"
+                    if res.get("unsubscribed")
+                    else "Archived from inbox"
+                )
+                await self.telegram_client.send_message(
+                    chat_id=chat_id,
+                    text=f"🗑️ <b>{status_note}:</b> {sender_lbl} ({archived} email(s) archived).",
+                )
+            elif action_kind == "nudge":
+                email = await self.email_repo.get_by_id(target_id)
+                if not email or str(email.user_id) != str(link.user_id):
+                    await self.telegram_client.send_message(
+                        chat_id=chat_id, text="⚠️ Email not found."
+                    )
+                    return
+                await self._execute_custom_draft_creation(
+                    chat_id=chat_id,
+                    user_id=link.user_id,
+                    recipient=email.sender_email,
+                    instruction=f"Write a polite follow-up nudge regarding: {email.subject}",
+                )
             return
 
         # Atomically consume single-use callback token
@@ -796,9 +848,10 @@ class TelegramService:
                     email_repo=self.email_repo,
                     draft_repo=self.draft_repo,
                     telegram_repo=self.telegram_repo,
+                    auth_service=self.auth_service,
                     settings=self.settings,
                 )
-                res = await digest_svc.generate_and_dispatch_digest(user_id)
+                res = await digest_svc.generate_and_dispatch_digest(user_id, force=True)
                 if msg_id:
                     await self.telegram_client.delete_message(chat_id=chat_id, message_id=msg_id)
                 if res.get("status") == "skipped":
@@ -841,23 +894,243 @@ class TelegramService:
                     text=f"⚠️ Could not list commitments: {escape_html(str(exc))}",
                 )
 
+        elif cmd == "/radar":
+            try:
+                radar = await FollowupService().get_radar_summary(
+                    user_id=user_id, email_repo=self.email_repo, limit=5
+                )
+                w_you = radar.get("waiting_on_you", [])
+                w_others = radar.get("waiting_on_others", [])
+                if not w_you and not w_others:
+                    await self.telegram_client.send_message(
+                        chat_id=chat_id,
+                        text=(
+                            "🎯 <b>Decision &amp; Commitment Radar</b>\n\n"
+                            "✨ All clear! No pending replies or open commitments."
+                        ),
+                    )
+                    return
+
+                lines = ["🎯 <b>Decision &amp; Commitment Radar</b>\n"]
+                buttons: list[list[dict[str, str]]] = []
+                if w_you:
+                    lines.append("<b>⏳ People Waiting on You:</b>")
+                    for item in w_you:
+                        lines.append(
+                            f"• <b>{escape_html(item['sender'])}</b>: "
+                            f"{escape_html(item['subject'])}"
+                        )
+                    lines.append("")
+                if w_others:
+                    lines.append("<b>📤 Open Commitments &amp; Follow-ups:</b>")
+                    for item in w_others:
+                        lines.append(
+                            f"• {escape_html(item['label'])} (Due: {escape_html(item['due_date'])})"
+                        )
+                        if item.get("email_id"):
+                            buttons.append(
+                                [
+                                    {
+                                        "text": f"✍️ Draft Nudge: {item['label'][:24]}",
+                                        "callback_data": f"nudge:{item['email_id']}",
+                                    }
+                                ]
+                            )
+                radar_markup = {"inline_keyboard": buttons} if buttons else None
+                await self.telegram_client.send_message(
+                    chat_id=chat_id,
+                    text="\n".join(lines),
+                    reply_markup=radar_markup,
+                )
+            except Exception as exc:
+                logger.error("telegram_radar_failed", error=str(exc))
+                await self.telegram_client.send_message(
+                    chat_id=chat_id,
+                    text=f"⚠️ Could not load radar: {escape_html(str(exc))}",
+                )
+
+        elif cmd == "/unsubscribe":
+            try:
+                auth_svc = self.auth_service or AuthService(
+                    user_repo=self.user_repo, settings=self.settings
+                )
+                unsub_svc = UnsubscribeService(
+                    email_repo=self.email_repo, auth_service=auth_svc
+                )
+                candidates = await unsub_svc.list_candidates(user_id=user_id, limit=5)
+                if not candidates:
+                    await self.telegram_client.send_message(
+                        chat_id=chat_id,
+                        text="✨ No newsletter or promo senders with unsubscribe links found.",
+                    )
+                    return
+
+                lines = ["🧹 <b>One-Tap Newsletter &amp; Promo Purge:</b>\n"]
+                buttons = []
+                for c in candidates:
+                    cnt = len(c.get("gmail_msg_ids", []))
+                    lines.append(
+                        f"• <b>{escape_html(c['sender'])}</b> "
+                        f"(<code>{escape_html(c['sender_email'])}</code>) — {cnt} email(s)"
+                    )
+                    buttons.append(
+                        [
+                            {
+                                "text": f"🗑️ Unsubscribe & Archive: {c['sender'][:22]}",
+                                "callback_data": f"unsub:{c['email_id']}",
+                            }
+                        ]
+                    )
+                await self.telegram_client.send_message(
+                    chat_id=chat_id,
+                    text="\n".join(lines),
+                    reply_markup={"inline_keyboard": buttons},
+                )
+            except Exception as exc:
+                logger.error("telegram_unsubscribe_failed", error=str(exc))
+                await self.telegram_client.send_message(
+                    chat_id=chat_id,
+                    text=f"⚠️ Could not list newsletters: {escape_html(str(exc))}",
+                )
+
+        elif cmd == "/find":
+            query = " ".join(parts[1:]).strip()
+            if not query:
+                await self.telegram_client.send_message(
+                    chat_id=chat_id,
+                    text="ℹ️ <i>Usage:</i> <code>/find flight ticket</code>",
+                )
+                return
+            qa_svc = InboxQAService(
+                email_repo=self.email_repo,
+                settings=self.settings,
+                auth_service=self.auth_service,
+            )
+            hits = await qa_svc.search_emails(user_id=user_id, query=query, limit=5)
+            if not hits:
+                await self.telegram_client.send_message(
+                    chat_id=chat_id,
+                    text=f"🔍 No emails found matching <b>{escape_html(query)}</b>.",
+                )
+                return
+            lines = [f"🔍 <b>Search Results for \"{escape_html(query)}\":</b>\n"]
+            for h in hits:
+                date_part = (h.get("received_at") or "")[:10]
+                lines.append(
+                    f"• <b>{escape_html(h['subject'])}</b>\n"
+                    f"  From: {escape_html(h['sender'])} ({date_part})\n"
+                    f"  <i>{escape_html(h.get('summary') or '')}</i>"
+                )
+            await self.telegram_client.send_message(
+                chat_id=chat_id,
+                text="\n".join(lines),
+            )
+
+        elif cmd == "/voice":
+            arg = parts[1].strip().lower() if len(parts) > 1 else ""
+            user = await self.user_repo.get_by_id(user_id)
+            user_prefs: dict[str, Any] = dict(user.prefs) if user and user.prefs else {}
+
+            if arg in ("on", "off"):
+                enabled = arg == "on"
+                user_prefs["voice_briefing"] = enabled
+                await self.user_repo.update_user(user_id, UserUpdate(prefs=user_prefs))
+                state_lbl = "enabled ✅" if enabled else "disabled 🔕"
+                await self.telegram_client.send_message(
+                    chat_id=chat_id,
+                    text=f"🎙️ Morning voice briefing is now <b>{state_lbl}</b> for your account.",
+                )
+                return
+
+            if arg == "list":
+                current_voice = resolve_voice_name(user_prefs)
+                enabled = is_voice_enabled(user_prefs)
+                lines = [
+                    "🎙️ <b>Voice Briefing Settings</b>\n",
+                    f"• Status: <b>{'Enabled' if enabled else 'Disabled'}</b>",
+                    f"• Active Voice: <code>{escape_html(current_voice)}</code>\n",
+                    "<b>Available Presets:</b>",
+                ]
+                for key, (v_id, desc) in VOICE_PRESETS.items():
+                    marker = " ✅" if v_id == current_voice else ""
+                    lines.append(f"• <code>/voice {key}</code> — {desc}{marker}")
+                lines.append(
+                    "\n<i>Toggle with</i> <code>/voice on</code> "
+                    "<i>or</i> <code>/voice off</code>."
+                )
+                await self.telegram_client.send_message(
+                    chat_id=chat_id, text="\n".join(lines)
+                )
+                return
+
+            if arg in VOICE_PRESETS:
+                v_id, desc = VOICE_PRESETS[arg]
+                user_prefs["voice_name"] = arg
+                await self.user_repo.update_user(user_id, UserUpdate(prefs=user_prefs))
+                await self.telegram_client.send_message(
+                    chat_id=chat_id,
+                    text=f"🎙️ Voice updated to <b>{desc}</b> (<code>{v_id}</code>).",
+                )
+                return
+
+            if arg:
+                await self.telegram_client.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        "⚠️ Unknown voice option. Use <code>/voice list</code> to see available "
+                        "voices, <code>/voice on|off</code>, or <code>/voice</code> to play now."
+                    ),
+                )
+                return
+
+            # No args: send BOTH text digest and voice briefing right now
+            status_msg = await self.telegram_client.send_message(
+                chat_id=chat_id,
+                text="🎙️ <i>Preparing your text + voice briefing...</i>",
+            )
+            msg_id = status_msg.get("message_id") if isinstance(status_msg, dict) else None
+            try:
+                digest_svc = DigestService(
+                    user_repo=self.user_repo,
+                    email_repo=self.email_repo,
+                    draft_repo=self.draft_repo,
+                    telegram_repo=self.telegram_repo,
+                    telegram_client=self.telegram_client,
+                    auth_service=self.auth_service,
+                    settings=self.settings,
+                )
+                await digest_svc.generate_and_dispatch_digest(
+                    user_id, force=True, include_voice=True
+                )
+            finally:
+                if msg_id:
+                    with contextlib.suppress(Exception):
+                        await self.telegram_client.delete_message(
+                            chat_id=chat_id, message_id=int(msg_id)
+                        )
+
         elif cmd == "/help":
             await self.telegram_client.send_message(
                 chat_id=chat_id,
                 text=(
                     "🤖 <b>Email Agent Bot Commands:</b>\n\n"
-                    "<b>Email & Approvals:</b>\n"
+                    "<b>Email &amp; Approvals:</b>\n"
                     "• /create &lt;to&gt; &lt;notes&gt; - Compose a fresh email draft with AI\n"
                     "• /pending - Show drafts waiting for approval\n"
                     "• /urgent - Show high priority emails\n"
                     "• /sync - Manually trigger Gmail sync\n"
-                    "• /digest - Compile and send daily summary now\n\n"
-                    "<b>Productivity & AI:</b>\n"
+                    "• /digest - Send your email digest now\n"
+                    "• /voice - Send text + voice briefing "
+                    "(<code>/voice list</code>, <code>on</code>, <code>off</code>)\n\n"
+                    "<b>Productivity &amp; AI:</b>\n"
                     "• /ask &lt;query&gt; - Ask questions about your emails\n"
-                    "• /followups - View tracked promises & commitments\n"
+                    "• /find &lt;query&gt; - Search your encrypted email archive\n"
+                    "• /radar - Decision &amp; Commitment Radar (waiting on you / others)\n"
+                    "• /followups - View tracked promises &amp; commitments\n"
+                    "• /unsubscribe - One-tap newsletter &amp; promo purge\n"
                     "• <i>Tip: Send any question in chat to search your emails!</i>\n"
                     "• <i>Tip: Send a voice note to revise any draft!</i>\n\n"
-                    "<b>Settings & Keys:</b>\n"
+                    "<b>Settings &amp; Keys:</b>\n"
                     "• /setkey &lt;key&gt; - Set personal Groq API key\n"
                     "• /mykey - Check current Groq API key status\n"
                     "• /removekey - Remove personal Groq key\n"

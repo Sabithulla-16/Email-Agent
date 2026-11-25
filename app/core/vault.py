@@ -1,13 +1,17 @@
-"""Token Vault: AES-256-GCM authenticated encryption for OAuth refresh tokens."""
+"""Token & Data Vault: AES-256-GCM authenticated encryption and HMAC-SHA256 blind indexing."""
 
 import base64
+import hashlib
+import hmac
 import os
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from app.core.config import Settings, get_settings
 from app.core.errors import AppError
+
+ENC_PREFIX = "enc:v"
 
 
 class TokenVaultError(AppError):
@@ -80,6 +84,54 @@ class TokenVault:
             if isinstance(exc, TokenVaultError):
                 raise
             raise TokenVaultError(f"Failed to decrypt token: {exc}") from exc
+
+    def encrypt_field(self, plaintext: str | None) -> str | None:
+        """Encrypt a string field with an embedded version prefix (idempotent)."""
+        if plaintext is None or plaintext == "":
+            return plaintext
+        if plaintext.startswith(ENC_PREFIX):
+            return plaintext
+        ciphertext_b64, ver = self.encrypt(plaintext)
+        return f"{ENC_PREFIX}{ver}:{ciphertext_b64}"
+
+    def decrypt_field(self, value: str | None) -> str | None:
+        """Decrypt a prefixed field; returns legacy plaintext values unchanged."""
+        if value is None or not isinstance(value, str) or not value.startswith(ENC_PREFIX):
+            return value
+        rest = value[len(ENC_PREFIX) :]
+        if ":" not in rest:
+            return value
+        ver_str, ciphertext_b64 = rest.split(":", 1)
+        try:
+            ver = int(ver_str)
+        except ValueError:
+            return value
+        return self.decrypt(ciphertext_b64, key_version=ver)
+
+    def blind_index(self, value: str) -> str:
+        """Compute deterministic HMAC-SHA256 blind index for exact-match lookups."""
+        key = self._keys[self.active_version]
+        return hmac.new(key, value.strip().lower().encode("utf-8"), hashlib.sha256).hexdigest()
+
+    def encrypt_json_strings(self, obj: Any) -> Any:
+        """Recursively encrypt all string values inside a JSON-like structure."""
+        if isinstance(obj, str):
+            return self.encrypt_field(obj)
+        if isinstance(obj, list):
+            return [self.encrypt_json_strings(item) for item in obj]
+        if isinstance(obj, dict):
+            return {k: self.encrypt_json_strings(v) for k, v in obj.items()}
+        return obj
+
+    def decrypt_json_strings(self, obj: Any) -> Any:
+        """Recursively decrypt all prefixed string values inside a JSON-like structure."""
+        if isinstance(obj, str):
+            return self.decrypt_field(obj)
+        if isinstance(obj, list):
+            return [self.decrypt_json_strings(item) for item in obj]
+        if isinstance(obj, dict):
+            return {k: self.decrypt_json_strings(v) for k, v in obj.items()}
+        return obj
 
 
 _vault_instance: TokenVault | None = None

@@ -5,6 +5,7 @@ from typing import Any, cast
 from uuid import UUID
 
 from app.core.errors import NotFoundError
+from app.core.vault import TokenVault, get_token_vault
 from app.db.repos.base import BaseRepo
 from app.models.db import (
     NotificationPrefsRow,
@@ -20,7 +21,31 @@ from app.models.db import (
 
 
 class UserRepo(BaseRepo):
-    """Encapsulates all user, session, and credential data access."""
+    """Encapsulates all user, session, and credential data access with PII encryption."""
+
+    def __init__(self, client: Any, vault: TokenVault | None = None) -> None:
+        super().__init__(client)
+        self._vault = vault
+
+    @property
+    def vault(self) -> TokenVault:
+        if self._vault is None:
+            self._vault = get_token_vault()
+        return self._vault
+
+    def _encrypt_user_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        encrypted = dict(payload)
+        for field in ("email", "name"):
+            if field in encrypted and isinstance(encrypted[field], str):
+                encrypted[field] = self.vault.encrypt_field(encrypted[field])
+        return encrypted
+
+    def _decrypt_user_row(self, row: dict[str, Any]) -> dict[str, Any]:
+        decrypted = dict(row)
+        for field in ("email", "name"):
+            if field in decrypted and isinstance(decrypted[field], str):
+                decrypted[field] = self.vault.decrypt_field(decrypted[field])
+        return decrypted
 
     async def get_by_id(self, user_id: UUID | str) -> UserRow | None:
         async def _query() -> list[dict[str, Any]]:
@@ -30,7 +55,7 @@ class UserRepo(BaseRepo):
         data = await self._execute_with_retry(_query)
         if not data:
             return None
-        return UserRow.model_validate(data[0])
+        return UserRow.model_validate(self._decrypt_user_row(data[0]))
 
     async def get_by_google_sub(self, google_sub: str) -> UserRow | None:
         async def _query() -> list[dict[str, Any]]:
@@ -42,10 +67,10 @@ class UserRepo(BaseRepo):
         data = await self._execute_with_retry(_query)
         if not data:
             return None
-        return UserRow.model_validate(data[0])
+        return UserRow.model_validate(self._decrypt_user_row(data[0]))
 
     async def upsert_user(self, user_data: UserCreate) -> UserRow:
-        payload = user_data.model_dump(exclude_none=True)
+        payload = self._encrypt_user_payload(user_data.model_dump(exclude_none=True))
 
         async def _query() -> list[dict[str, Any]]:
             res = await (
@@ -54,10 +79,10 @@ class UserRepo(BaseRepo):
             return cast(list[dict[str, Any]], res.data)
 
         data = await self._execute_with_retry(_query)
-        return UserRow.model_validate(data[0])
+        return UserRow.model_validate(self._decrypt_user_row(data[0]))
 
     async def update_user(self, user_id: UUID | str, update_data: UserUpdate) -> UserRow:
-        payload = update_data.model_dump(exclude_none=True)
+        payload = self._encrypt_user_payload(update_data.model_dump(exclude_none=True))
 
         async def _query() -> list[dict[str, Any]]:
             res = await self.client.table("users").update(payload).eq("id", str(user_id)).execute()
@@ -66,7 +91,7 @@ class UserRepo(BaseRepo):
         data = await self._execute_with_retry(_query)
         if not data:
             raise NotFoundError(f"User {user_id} not found")
-        return UserRow.model_validate(data[0])
+        return UserRow.model_validate(self._decrypt_user_row(data[0]))
 
     async def claim_due_users(self, limit: int = 20) -> list[UserRow]:
         """Claim users due for digest using atomic stored procedure."""
@@ -76,7 +101,7 @@ class UserRepo(BaseRepo):
             return cast(list[dict[str, Any]], res.data)
 
         data = await self._execute_with_retry(_query)
-        return [UserRow.model_validate(row) for row in data]
+        return [UserRow.model_validate(self._decrypt_user_row(row)) for row in data]
 
     async def list_active_users(self, limit: int = 50) -> list[UserRow]:
         """List active users whose accounts have not been deleted."""
@@ -92,7 +117,7 @@ class UserRepo(BaseRepo):
             return cast(list[dict[str, Any]], res.data)
 
         data = await self._execute_with_retry(_query)
-        return [UserRow.model_validate(row) for row in data]
+        return [UserRow.model_validate(self._decrypt_user_row(row)) for row in data]
 
     async def delete_user_data(self, user_id: UUID | str) -> None:
         """Call atomic delete_user_data RPC."""

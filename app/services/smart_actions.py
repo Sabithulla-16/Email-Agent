@@ -7,6 +7,7 @@ from uuid import UUID
 
 import structlog
 
+from app.core.vault import get_token_vault
 from app.db.client import get_supabase
 from app.models.db import EmailAnalysisRow, EmailRow
 
@@ -86,10 +87,11 @@ class SmartActionsService:
             if not task_text:
                 continue
 
+            vault = get_token_vault()
             payload = {
                 "user_id": str(user_id),
                 "email_id": str(email_id),
-                "title": task_text,
+                "title": vault.encrypt_field(task_text),
                 "status": "pending",
                 "created_at": datetime.now(UTC).isoformat(),
                 "updated_at": datetime.now(UTC).isoformat(),

@@ -19,7 +19,11 @@ from app.models.db import UserUpdate
 from app.queue.worker import run_user_digest, run_user_sync_pipeline
 from app.services.approval_service import ApprovalService
 from app.services.auth_service import AuthService
-from app.services.digest_service import DigestService, compute_next_digest_time
+from app.services.digest_service import (
+    DEFAULT_DIGEST_SLOTS,
+    DigestService,
+    compute_next_digest_time,
+)
 from app.services.groq_service import GroqService
 from app.services.notification_service import NotificationService
 from app.services.sync_service import SyncService
@@ -119,20 +123,23 @@ async def run_direct_sync_cycle(target_user_id: str | None = None) -> dict[str, 
             total_new += sync_res.get("new_emails_synced", 0)
             total_drafts += sync_res.get("drafts_created", 0)
 
-            # 2. Check if daily digest is due
+            # 2. Check if scheduled digest (9 AM / 3 PM / 9 PM IST) is due
+            user_tz = user.timezone if user.timezone and user.timezone != "UTC" else "Asia/Kolkata"
             if user.next_digest_at is None:
                 next_digest = compute_next_digest_time(
                     digest_time=user.digest_time,
-                    user_timezone=user.timezone,
+                    user_timezone=user_tz,
                     now=now,
+                    digest_slots=DEFAULT_DIGEST_SLOTS,
                 )
                 await user_repo.update_user(user.id, UserUpdate(next_digest_at=next_digest))
             elif user.next_digest_at <= now:
                 await run_user_digest(ctx, str(user.id))
                 next_digest = compute_next_digest_time(
                     digest_time=user.digest_time,
-                    user_timezone=user.timezone,
+                    user_timezone=user_tz,
                     now=now,
+                    digest_slots=DEFAULT_DIGEST_SLOTS,
                 )
                 await user_repo.update_user(user.id, UserUpdate(next_digest_at=next_digest))
         except Exception as exc:

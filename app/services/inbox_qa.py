@@ -163,3 +163,16 @@ class InboxQAService:
             "answer": answer_text,
             "citations": citations,
         }
+
+    async def search_emails(
+        self,
+        user_id: UUID | str,
+        query: str,
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Encrypted-safe semantic/keyword search over a single user's email archive."""
+        if hasattr(self.email_repo, "search_decrypted"):
+            return await self.email_repo.search_decrypted(
+                user_id=user_id, query=query, limit=limit
+            )
+        return []

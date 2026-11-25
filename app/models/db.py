@@ -81,12 +81,13 @@ class UserRow(BaseModel):
     google_sub: str
     email: str
     name: str | None = None
-    timezone: str = "UTC"
+    timezone: str = "Asia/Kolkata"
     digest_time: time = time(9, 0)
     locale: str = "en"
     prefs: dict[str, Any] = Field(default_factory=dict)
     feature_flags: dict[str, bool] = Field(default_factory=dict)
     next_digest_at: datetime | None = None
+    last_digest_at: datetime | None = None
     deleted_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
@@ -96,7 +97,7 @@ class UserCreate(BaseModel):
     google_sub: str
     email: str
     name: str | None = None
-    timezone: str = "UTC"
+    timezone: str = "Asia/Kolkata"
     digest_time: str = "09:00:00"
     locale: str = "en"
     prefs: dict[str, Any] = Field(
@@ -104,6 +105,7 @@ class UserCreate(BaseModel):
     )
     feature_flags: dict[str, bool] = Field(default_factory=dict)
     next_digest_at: datetime | None = None
+    last_digest_at: datetime | None = None
 
 
 class UserUpdate(BaseModel):
@@ -114,6 +116,7 @@ class UserUpdate(BaseModel):
     prefs: dict[str, Any] | None = None
     feature_flags: dict[str, bool] | None = None
     next_digest_at: datetime | None = None
+    last_digest_at: datetime | None = None
 
 
 # -----------------------------------------------------------------------------
