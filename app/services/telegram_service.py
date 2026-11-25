@@ -197,12 +197,22 @@ class TelegramService:
                     )
                 )
                 msg = f"🗑️ <b>{status_note}:</b> {sender_lbl} ({archived} email(s) archived)."
+                unsub_markup: dict[str, Any] | None = None
                 if res.get("archive_permission_missing"):
+                    base = self.settings.PUBLIC_BASE_URL.rstrip("/")
+                    reconnect_url = f"{base}/api/v1/auth/google?chat_id={chat_id}"
                     msg += (
-                        "\n\nℹ️ <i>To enable Gmail auto-archiving, please reconnect Gmail "
-                        "once via /start to grant archive permission.</i>"
+                        "\n\nℹ️ <i>Your current Gmail token doesn't have archive permission yet. "
+                        "Tap below once to reconnect Gmail with archive access:</i>"
                     )
-                await self.telegram_client.send_message(chat_id=chat_id, text=msg)
+                    unsub_markup = {
+                        "inline_keyboard": [
+                            [{"text": "⟡ Reconnect Gmail", "url": reconnect_url}]
+                        ]
+                    }
+                await self.telegram_client.send_message(
+                    chat_id=chat_id, text=msg, reply_markup=unsub_markup
+                )
             elif action_kind == "nudge":
                 email = await self.email_repo.get_by_id(target_id)
                 if not email or str(email.user_id) != str(link.user_id):
@@ -635,6 +645,21 @@ class TelegramService:
             await self.telegram_client.send_message(
                 chat_id=chat_id,
                 text="🔌 <b>Telegram disconnected.</b> Notifications have been stopped.",
+            )
+
+        elif cmd == "/reconnect":
+            base = self.settings.PUBLIC_BASE_URL.rstrip("/")
+            connect_url = f"{base}/api/v1/auth/google?chat_id={chat_id}"
+            await self.telegram_client.send_message(
+                chat_id=chat_id,
+                text=(
+                    "🔑 <b>Reconnect Gmail</b>\n\n"
+                    "Tap the button below to re-authorize your Gmail account and grant "
+                    "updated permissions (including archiving):"
+                ),
+                reply_markup={
+                    "inline_keyboard": [[{"text": "⟡ Reconnect Gmail", "url": connect_url}]]
+                },
             )
 
         elif cmd == "/create":
