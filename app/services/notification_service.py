@@ -53,7 +53,7 @@ class NotificationService:
         self,
         quiet_start: time | None,
         quiet_end: time | None,
-        user_timezone: str = "UTC",
+        user_timezone: str = "Asia/Kolkata",
     ) -> bool:
         """Evaluate if current wall-clock time in user timezone falls into quiet hours."""
         if not quiet_start or not quiet_end:
@@ -61,9 +61,12 @@ class NotificationService:
 
         tz: Any
         try:
-            tz = zoneinfo.ZoneInfo(user_timezone)
+            effective_tz = (
+                user_timezone if user_timezone and user_timezone != "UTC" else "Asia/Kolkata"
+            )
+            tz = zoneinfo.ZoneInfo(effective_tz)
         except Exception:
-            tz = UTC
+            tz = zoneinfo.ZoneInfo("Asia/Kolkata")
 
         now_local = datetime.now(tz).time()
 

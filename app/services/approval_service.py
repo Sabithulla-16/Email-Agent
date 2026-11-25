@@ -8,10 +8,9 @@ from typing import Any
 from uuid import UUID
 
 import structlog
-from groq import AsyncGroq
 
 from app.core.config import Settings, get_settings
-from app.core.errors import ConflictError, NotFoundError, ValidationError
+from app.core.errors import ConflictError, ExternalServiceError, NotFoundError, ValidationError
 from app.db.repos.draft_repo import DraftRepo
 from app.db.repos.email_repo import EmailRepo
 from app.db.repos.user_repo import UserRepo
@@ -25,6 +24,7 @@ from app.models.db import (
 )
 from app.services.auth_service import AuthService
 from app.services.gmail_client import GmailClient
+from app.services.groq_service import GroqService
 from app.services.mime_builder import build_mime_reply
 
 logger = structlog.get_logger("app.services.approval")
@@ -66,16 +66,15 @@ class ApprovalService:
         user_repo: UserRepo,
         auth_service: AuthService,
         settings: Settings | None = None,
+        groq_service: GroqService | None = None,
     ) -> None:
         self.draft_repo = draft_repo
         self.email_repo = email_repo
         self.user_repo = user_repo
         self.auth_service = auth_service
         self.settings = settings or get_settings()
-        self.groq_client = AsyncGroq(
-            api_key=self.settings.GROQ_API_KEY.get_secret_value(),
-            max_retries=0,
-        )
+        self.groq_service = groq_service or GroqService(settings=self.settings)
+        self.groq_client = self.groq_service.client
 
     # -------------------------------------------------------------------------
     # State Transition Enforcer
@@ -166,12 +165,6 @@ class ApprovalService:
             except Exception:
                 user_key = None
 
-        groq_client = (
-            AsyncGroq(api_key=user_key.strip(), max_retries=0)
-            if user_key and user_key.strip()
-            else self.groq_client
-        )
-
         # Load draft generation prompt
         prompt_template = (PROMPTS_DIR / "draft_v1.txt").read_text(encoding="utf-8")
         tone = user.prefs.get("tone", "friendly")
@@ -187,29 +180,21 @@ class ApprovalService:
             f"</untrusted_email_content>"
         )
 
-        candidate_models = [
-            self.settings.GROQ_DRAFT_MODEL,
-            getattr(self.settings, "GROQ_FALLBACK_MODEL", "qwen/qwen3.8-27b"),
-            self.settings.GROQ_FAST_MODEL,
-        ]
         draft_text = ""
-        model_used = candidate_models[0]
-        for m in candidate_models:
-            try:
-                resp = await groq_client.chat.completions.create(
-                    model=m,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_content},
-                    ],
-                    temperature=0.2,
-                )
-                draft_text = (resp.choices[0].message.content or "").strip()
-                model_used = m
-                break
-            except Exception as exc:
-                logger.warning("draft_model_call_failed", model=m, error=str(exc))
-                continue
+        model_used = self.settings.GROQ_DRAFT_MODEL
+        try:
+            draft_text, model_used = await self.groq_service.chat_completion_with_fallback(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content},
+                ],
+                primary_model=self.settings.GROQ_DRAFT_MODEL,
+                temperature=0.2,
+                api_key=user_key,
+                client_override=(None if (user_key and user_key.strip()) else self.groq_client),
+            )
+        except Exception as exc:
+            logger.warning("draft_all_models_failed_using_fallback", error=str(exc))
 
         if not draft_text:
             draft_text = (
@@ -273,12 +258,6 @@ class ApprovalService:
             except Exception:
                 user_key = None
 
-        groq_client = (
-            AsyncGroq(api_key=user_key.strip(), max_retries=0)
-            if user_key and user_key.strip()
-            else self.groq_client
-        )
-
         tone = user.prefs.get("tone", "friendly")
         user_name = user.name or "User"
         sig = user.prefs.get("signature") or f"Best regards,\n{user_name}"
@@ -301,37 +280,27 @@ class ApprovalService:
             f"User Instructions / Notes:\n{user_instruction}"
         )
 
-        candidate_models = [
-            self.settings.GROQ_DRAFT_MODEL,
-            getattr(self.settings, "GROQ_FALLBACK_MODEL", "qwen/qwen3.8-27b"),
-            self.settings.GROQ_FAST_MODEL,
-        ]
-
         parsed_subject = subject or "Quick update"
         parsed_body = ""
-        model_used = candidate_models[0]
+        model_used = self.settings.GROQ_DRAFT_MODEL
 
-        for m in candidate_models:
-            try:
-                resp = await groq_client.chat.completions.create(
-                    model=m,
-                    messages=[
-                        {"role": "system", "content": sys_prompt},
-                        {"role": "user", "content": user_content},
-                    ],
-                    response_format={"type": "json_object"},
-                    temperature=0.2,
-                )
-                raw = (resp.choices[0].message.content or "").strip()
-                data = json.loads(raw)
-                parsed_subject = str(data.get("subject", subject or "Quick update")).strip()
-                parsed_body = str(data.get("body", "")).strip()
-                model_used = m
-                if parsed_body:
-                    break
-            except Exception as exc:
-                logger.warning("compose_draft_llm_failed", model=m, error=str(exc))
-                continue
+        try:
+            raw, model_used = await self.groq_service.chat_completion_with_fallback(
+                messages=[
+                    {"role": "system", "content": sys_prompt},
+                    {"role": "user", "content": user_content},
+                ],
+                primary_model=self.settings.GROQ_DRAFT_MODEL,
+                temperature=0.2,
+                api_key=user_key,
+                response_format={"type": "json_object"},
+                client_override=(None if (user_key and user_key.strip()) else self.groq_client),
+            )
+            data = json.loads(raw)
+            parsed_subject = str(data.get("subject", subject or "Quick update")).strip()
+            parsed_body = str(data.get("body", "")).strip()
+        except Exception as exc:
+            logger.warning("compose_draft_all_models_failed", error=str(exc))
 
         if not parsed_body:
             parsed_body = f"Hi,\n\n{user_instruction}\n\n{sig}"
@@ -511,12 +480,6 @@ class ApprovalService:
             except Exception:
                 user_key = None
 
-        groq_client = (
-            AsyncGroq(api_key=user_key.strip(), max_retries=0)
-            if user_key and user_key.strip()
-            else self.groq_client
-        )
-
         # Fetch previous version body
         versions = await self.draft_repo.get_versions(draft.id)
         previous_draft_body = versions[-1].body if versions else ""
@@ -548,16 +511,27 @@ class ApprovalService:
             f"</user_revision_instruction>"
         )
 
-        model_name = self.settings.GROQ_DRAFT_MODEL
-        resp = await groq_client.chat.completions.create(
-            model=model_name,
-            messages=[
-                {"role": "system", "content": sys_prompt},
-                {"role": "user", "content": user_content},
-            ],
-            temperature=0.2,
-        )
-        new_body = (resp.choices[0].message.content or "").strip()
+        try:
+            new_body, model_name = await self.groq_service.chat_completion_with_fallback(
+                messages=[
+                    {"role": "system", "content": sys_prompt},
+                    {"role": "user", "content": user_content},
+                ],
+                primary_model=self.settings.GROQ_DRAFT_MODEL,
+                temperature=0.2,
+                api_key=user_key,
+                client_override=(None if (user_key and user_key.strip()) else self.groq_client),
+            )
+        except Exception as exc:
+            logger.error("revise_draft_all_models_failed", draft_id=str(draft.id), error=str(exc))
+            await self.transition(
+                revising_draft,
+                DraftStatus.PENDING_APPROVAL,
+                failure_reason="LLM revision temporarily unavailable",
+            )
+            raise ExternalServiceError(
+                "AI revision is temporarily unavailable. Please try again in a moment."
+            ) from exc
 
         # Increment version in database
         new_version = await self.draft_repo.create_version(

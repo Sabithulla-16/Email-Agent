@@ -147,8 +147,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {
             "status": "ready" if is_ready else "degraded",
             "services": {
-                "database": {"healthy": db_ok, "detail": db_detail},
-                "redis": {"healthy": redis_ok, "detail": redis_detail},
+                "database": {
+                    "healthy": db_ok,
+                    "detail": "ok"
+                    if db_ok
+                    else ("unavailable" if cfg.is_production else db_detail),
+                },
+                "redis": {
+                    "healthy": redis_ok,
+                    "detail": (
+                        "ok" if redis_ok else ("unavailable" if cfg.is_production else redis_detail)
+                    ),
+                },
             },
         }
 

@@ -27,6 +27,23 @@ PROMPT_VERSION = "analysis_v1"
 PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
 
 
+_RATE_LIMIT_MARKERS = (
+    "429",
+    "rate_limit",
+    "rate limit",
+    "tokens per minute",
+    "requests per minute",
+    "503",
+    "overloaded",
+    "capacity",
+)
+
+
+def _is_rate_limit_or_capacity_error(err_str: str) -> bool:
+    low = err_str.lower()
+    return any(marker in low for marker in _RATE_LIMIT_MARKERS)
+
+
 class GroqService:
     """Orchestrates LLM email analysis and audio transcriptions via official Groq SDK."""
 
@@ -109,6 +126,7 @@ class GroqService:
             self.settings.GROQ_FAST_MODEL,
             getattr(self.settings, "GROQ_FALLBACK_MODEL", "qwen/qwen3.8-27b"),
             self.settings.GROQ_DRAFT_MODEL,
+            "llama-3.3-70b-versatile",
         ]
         # Deduplicate while preserving order
         seen_models: set[str] = set()
@@ -166,7 +184,7 @@ class GroqService:
 
             except Exception as exc:
                 last_error = str(exc)
-                if "429" in last_error or "rate_limit" in last_error.lower():
+                if _is_rate_limit_or_capacity_error(last_error):
                     self._model_cooldowns[model_name] = time.monotonic() + 60.0
                     logger.warning(
                         "groq_model_rate_limited_entering_cooldown",
@@ -292,17 +310,20 @@ class GroqService:
         temperature: float = 0.2,
         max_tokens: int | None = None,
         api_key: str | None = None,
+        response_format: dict[str, str] | None = None,
+        client_override: AsyncGroq | None = None,
     ) -> tuple[str, str]:
         """Call Groq chat completion with automatic fallback to secondary models on rate limit.
 
         Catches 429 rate limit errors or capacity issues and tries fallbacks (e.g. Qwen, Llama).
         Returns (content, model_name_used).
         """
-        client = self.get_client(api_key)
+        client = client_override or self.get_client(api_key)
         primary = primary_model or self.settings.GROQ_FAST_MODEL
         default_fallbacks = [
             getattr(self.settings, "GROQ_FALLBACK_MODEL", "qwen/qwen3.8-27b"),
             self.settings.GROQ_DRAFT_MODEL,
+            "llama-3.3-70b-versatile",
         ]
         fallbacks = fallback_models or default_fallbacks
 
@@ -310,7 +331,7 @@ class GroqService:
         seen = set()
         candidate_models = []
         for m in [primary] + fallbacks:
-            if m not in seen:
+            if m and m not in seen:
                 seen.add(m)
                 candidate_models.append(m)
 
@@ -330,6 +351,8 @@ class GroqService:
                 }
                 if max_tokens:
                     kwargs["max_tokens"] = max_tokens
+                if response_format:
+                    kwargs["response_format"] = response_format
 
                 resp = await client.chat.completions.create(**kwargs)
                 content = (resp.choices[0].message.content or "").strip()
@@ -338,7 +361,7 @@ class GroqService:
             except Exception as exc:
                 last_exc = exc
                 err_str = str(exc)
-                if "429" in err_str or "rate_limit" in err_str.lower():
+                if _is_rate_limit_or_capacity_error(err_str):
                     self._model_cooldowns[model] = time.monotonic() + 60.0
                     logger.warning(
                         "groq_model_rate_limited_entering_cooldown",
@@ -350,6 +373,7 @@ class GroqService:
                     failed_model=model,
                     error=err_str.lower(),
                 )
+                await asyncio.sleep(0.25)
                 continue
 
         if last_exc:

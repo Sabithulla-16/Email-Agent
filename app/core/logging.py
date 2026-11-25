@@ -28,6 +28,12 @@ SENSITIVE_SUBSTRINGS = (
     "secret",
     "api_key",
     "auth_header",
+    "bearer",
+    "cookie",
+    "encryption_key",
+    "groq",
+    "refresh",
+    "body_clean",
 )
 
 

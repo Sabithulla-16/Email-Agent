@@ -151,14 +151,21 @@ class TelegramService:
         if not update_id:
             return
 
-        if await self.is_update_duplicate(update_id):
-            return
+        try:
+            if await self.is_update_duplicate(update_id):
+                return
 
-        # Route update
-        if "callback_query" in update:
-            await self._handle_callback_query(update["callback_query"])
-        elif "message" in update:
-            await self._handle_message(update["message"])
+            # Route update
+            if "callback_query" in update:
+                await self._handle_callback_query(update["callback_query"])
+            elif "message" in update:
+                await self._handle_message(update["message"])
+        except Exception as exc:
+            logger.exception(
+                "telegram_webhook_update_failed",
+                update_id=update_id,
+                error=str(exc),
+            )
 
     # -------------------------------------------------------------------------
     # Callback Query Handler (Single-Use Inline Buttons)
@@ -198,6 +205,8 @@ class TelegramService:
                 parts = token.split(":", 2)
                 if len(parts) == 3:
                     _, field_kind, sched_id = parts
+                    _PENDING_COMPOSE_STATES.pop(chat_id, None)
+                    _PENDING_SCHEDULE_STATES.pop(chat_id, None)
                     _PENDING_SCHEDULE_EDIT_STATES[chat_id] = {
                         "user_id": link.user_id,
                         "scheduled_id": sched_id,
@@ -353,7 +362,7 @@ class TelegramService:
                 )
 
         except Exception as exc:
-            logger.error(
+            logger.exception(
                 "telegram_callback_action_failed",
                 action=action,
                 draft_id=str(draft_id),
@@ -361,7 +370,7 @@ class TelegramService:
             )
             await self.telegram_client.send_message(
                 chat_id=chat_id,
-                text=f"! <b>Action failed:</b> {escape_html(str(exc))}",
+                text="! <b>Could not complete that action.</b> Please try again or use /pending.",
             )
 
     # -------------------------------------------------------------------------
@@ -575,10 +584,10 @@ class TelegramService:
         except Exception as exc:
             if msg_id:
                 await self.telegram_client.delete_message(chat_id=chat_id, message_id=msg_id)
-            logger.error("telegram_qa_failed", query=query, error=str(exc))
+            logger.exception("telegram_qa_failed", query=query, error=str(exc))
             await self.telegram_client.send_message(
                 chat_id=chat_id,
-                text=f"! <b>Could not answer query:</b> {escape_html(str(exc))}",
+                text="! <b>Could not process your question right now.</b> Please try again.",
             )
 
     # -------------------------------------------------------------------------
@@ -808,6 +817,8 @@ class TelegramService:
             )
 
         elif cmd == "/create":
+            _PENDING_SCHEDULE_STATES.pop(chat_id, None)
+            _PENDING_SCHEDULE_EDIT_STATES.pop(chat_id, None)
             rest = command_text[len(cmd) :].strip()
             if not rest:
                 await self.telegram_client.send_message(
@@ -894,6 +905,8 @@ class TelegramService:
                 )
 
         elif cmd == "/schedule":
+            _PENDING_COMPOSE_STATES.pop(chat_id, None)
+            _PENDING_SCHEDULE_EDIT_STATES.pop(chat_id, None)
             rest = command_text[len(cmd) :].strip()
             if rest.lower() == "list":
                 await self._send_scheduled_list(chat_id, user_id)
@@ -966,12 +979,15 @@ class TelegramService:
                 )
 
         elif cmd == "/snooze":
+            import zoneinfo
+
             hours = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 2
             snooze_until = datetime.now(UTC) + timedelta(hours=hours)
             await self.user_repo.upsert_notification_prefs(
                 user_id, {"snoozed_until": snooze_until.isoformat()}
             )
-            time_str = snooze_until.strftime("%H:%M UTC")
+            ist_tz = zoneinfo.ZoneInfo("Asia/Kolkata")
+            time_str = snooze_until.astimezone(ist_tz).strftime("%H:%M IST")
             await self.telegram_client.send_message(
                 chat_id=chat_id,
                 text=f"◷ Notifications snoozed for {hours} hours (until {time_str}).",
